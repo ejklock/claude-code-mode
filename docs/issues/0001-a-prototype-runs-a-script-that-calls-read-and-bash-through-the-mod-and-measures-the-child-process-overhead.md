@@ -24,15 +24,17 @@ Out: MCP tools, other built-in tools, `store()`/`load()`, tool search, the decla
 
 - One child process per script call for the prototype. A long-lived child is the option not taken, kept for the case where the measurement shows start-up dominates.
 - Tool names in the script follow Claude Code's (`tools.Read`, `tools.Bash`), not Pi's lower-case names. Pi aliases are a parity question for a later issue.
-- `$.tool.register` exposes the tool to the model as `mcp__claude-code-mode__codemode`; "the `codemode` tool" in these docs means that name.
+- The plugin is named `codemode`, because `claude plugin validate` reserves names that start with `claude-`. The repository keeps its name. `$.tool.register` exposes the tool to the model as `mcp__codemode__codemode`, and "the `codemode` tool" in these docs means that name. Owner, 2026-10-06.
+- `typescript` and `@types/node` are exact-pinned devDependencies, so `npm run typecheck` covers the mod, the child and the tests. Owner, 2026-10-06.
 - The repository root is the plugin (`.claude-plugin/` at the root), loaded with `claude --plugin-dir .`; owner, 2026-10-06.
 - npm is the package manager, with a committed lockfile; owner, 2026-10-06.
 - The child entry script is TypeScript run directly by Node's type stripping, with no build step; owner, 2026-10-06.
 - `@earendil-works/pi-codemode` is pinned at `1.0.4`, the latest version on 2026-10-06 (needs Node >=22.19).
+- Proof is layered, because `claude plugin test` in build 2.1.291 runs no process (`HooksError: no implementation for process.spawn`, and no fs or network in the test environment). `claude plugin test` covers the mod's side with the child stood in by the test's `process.spawn` and `http.fetch` hooks. `node --test` covers the real child on a real socket. A headless `claude -p --plugin-dir .` run, with real allow and deny rules, proves the whole path. The stand-in counts only because the headless run proves the real path. Owner, 2026-10-06.
 
 ### Acceptance
 
-- A `codemode` call whose script reads a file with `tools.Read` and runs `echo` with `tools.Bash` returns both results to the model in one tool result. Proof: a `claude plugin test` case, and one live run recorded here.
+- A `codemode` call whose script reads a file with `tools.Read` and runs `echo` with `tools.Bash` returns both results to the model in one tool result. Proof: the layered tests (see Decision), and one live run recorded here.
 - A permission rule that denies the nested Bash command denies it inside the script, and the script sees the denial. Proof: a live run recorded here.
 - The overhead is measured and recorded here: the child's start-up time, and the median and 95th-percentile round trip of one bridged `tools.Read`, against a direct Read, over at least 20 runs.
 - No mod source file calls `$.mcp.call`, and the package manifest pins `@earendil-works/pi-codemode` with no version range. Proof: a test or a check that fails otherwise.

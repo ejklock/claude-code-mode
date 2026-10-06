@@ -6,5 +6,6 @@
   "homepage": "https://github.com/ejklock/claude-code-mode",
   "repository": "https://github.com/ejklock/claude-code-mode",
   "license": "MIT",
+  "types": "./types/index.d.ts",
   "keywords": ["codemode", "code-mode", "claude-code", "mod", "tool-calling", "token-efficiency", "pi", "quickjs"]
 }

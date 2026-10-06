@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { ANSWER_PATH } from '../shared/protocol.ts'
@@ -330,5 +330,48 @@ describe('an answer that cannot be delivered', () => {
     const reply = await callCodemode($)
     expect(reply.result).toBe('FIXTURE-CONTENT\ncodemode-ok')
     expect(stand.posts).toHaveLength(2)
+  })
+})
+
+describe('the width a run publishes', () => {
+  test('Proves P2: a run carries the length of its longest script line', async ($, on) => {
+    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
+    on('state.get', () => ({ value: held }))
+    on('state.set', (_$, e) => {
+      held = { value: e.value, version: held.version + 1 }
+      return { value: { isSet: true as const, version: held.version } }
+    })
+    mock.clock(on, { now: 1_000 })
+    standIn(on, { pieces: [listening, done('ok')] })
+
+    await $.tool.call({ tool: CODEMODE, code: 'short\nthe longest line here\nmid line' })
+    const runs = held.value as { scriptWidth?: number }[]
+    expect(runs[0]?.scriptWidth).toBe('the longest line here'.length)
+  })
+})
+
+describe('a progress state that cannot be published', () => {
+  test('Proves N1: the model gets the same result as when publishing works', async ($, on) => {
+    let isBroken = false
+    let held = { value: undefined as unknown, version: 0 }
+    on('state.get', () => {
+      if (isBroken) throw new Error('the state is gone')
+      return { value: held }
+    })
+    on('state.set', (_$, e) => {
+      if (isBroken) throw new Error('the state is gone')
+      held = { value: e.value, version: held.version + 1 }
+      return { value: { isSet: true as const, version: held.version } }
+    })
+    mock.clock(on, { now: 1_000 })
+    standIn(on, { pieces: SCRIPT_WITH_READ_AND_BASH })
+
+    const working = await callCodemode($)
+    expect(held.value).toBeDefined()
+
+    isBroken = true
+    const failing = await callCodemode($)
+    expect(working.result).toBe('FIXTURE-CONTENT\ncodemode-ok')
+    expect(failing).toEqual(working)
   })
 })

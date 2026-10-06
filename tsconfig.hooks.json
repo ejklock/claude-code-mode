@@ -3,5 +3,5 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true
   },
-  "include": ["hooks", "shared", "test/codemode.test.ts", ".claude-plugin/types"]
+  "include": ["hooks", "shared", "types", "test/codemode.test.ts", "test/render.test.tsx", ".claude-plugin/types"]
 }

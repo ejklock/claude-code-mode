@@ -67,6 +67,44 @@ describe('the mod never calls the MCP path', () => {
   })
 })
 
+const RUNS_REFERENCE = /RUNS\s*=\s*atom\(\s*\{\s*plugin:\s*'([^']+)'\s*,\s*key:\s*'([^']+)'/
+
+function runsReference(source: string): string | undefined {
+  const match = RUNS_REFERENCE.exec(source)
+  return match === null ? undefined : `${match[1]}/${match[2]}`
+}
+
+function driftProblem(registerSource: string, renderSource: string): string | undefined {
+  const written = runsReference(registerSource)
+  const drawn = runsReference(renderSource)
+  if (written === undefined || drawn === undefined) return 'a module does not declare the RUNS atom'
+  return written === drawn ? undefined : `register.ts writes ${written} but render.tsx reads ${drawn}`
+}
+
+describe('the two RUNS atoms name one state value', () => {
+  const module = (plugin: string, key: string): string =>
+    `const RUNS = atom({ plugin: '${plugin}', key: '${key}' } as const, [])\n`
+
+  it('Proves N2: the real tree passes', () => {
+    const register = readFileSync(join(ROOT, 'hooks/register.ts'), 'utf8')
+    const render = readFileSync(join(ROOT, 'hooks/render.tsx'), 'utf8')
+    assert.notEqual(runsReference(register), undefined)
+    assert.equal(driftProblem(register, render), undefined)
+  })
+
+  it('Proves N2: a different key fails', () => {
+    assert.match(driftProblem(module('codemode', 'runs'), module('codemode', 'other')) ?? '', /writes codemode\/runs but .* codemode\/other/)
+  })
+
+  it('Proves N2: a different plugin fails', () => {
+    assert.match(driftProblem(module('codemode', 'runs'), module('another', 'runs')) ?? '', /another\/runs/)
+  })
+
+  it('Proves N2: a module with no declaration fails', () => {
+    assert.match(driftProblem('', module('codemode', 'runs')) ?? '', /does not declare/)
+  })
+})
+
 describe('the pi-codemode pin is exact', () => {
   const manifest = (version: string): string =>
     JSON.stringify({ dependencies: { [PINNED_PACKAGE]: version } })

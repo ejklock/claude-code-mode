@@ -11,6 +11,7 @@ import type {
 
 import { ANSWER_PATH, isExposedTool, parseChildMessage } from '../shared/protocol.ts'
 import type { CallAnswer, ChildMessage, RunRequest } from '../shared/protocol.ts'
+import type { CodemodeCall, CodemodeCallState, CodemodeRun } from '../types/index.d.ts'
 
 /**
  * What the bridge needs of the engine. The hooks loader refuses a module that
@@ -21,6 +22,122 @@ export type BridgeHost = {
   spawn: (request: ProcessSpawnRequest) => HookStream<ProcessSpawnChunk, ProcessSpawnResult>
   callTool: (input: ToolCallArgs) => Promise<ToolCallResult>
   post: (url: string, init: HttpInit) => Promise<HttpResponse>
+  /** Applies a change to the runs the transcript draws from. */
+  publish: (change: (runs: CodemodeRun[]) => CodemodeRun[]) => Promise<void>
+  now: () => Promise<number>
+}
+
+/** Runs kept in `$.state`: the transcript rarely draws more than the latest few. */
+export const RUN_LIMIT = 20
+/** Calls kept per run; a script looping over files would otherwise grow one value without end. */
+export const CALL_LIMIT = 100
+const LABEL_CHARS = 80
+const REASON_CHARS = 120
+
+type Settled = {
+  answer: CallAnswer
+  state: Exclude<CodemodeCallState, 'running'>
+  reason?: string
+}
+
+// Built from strings so the source holds no raw control character. CSI and OSC
+// sequences go whole; a lone ESC with its next character goes after them.
+const ESCAPE_SEQUENCES = new RegExp(
+  ['\\u001b\\[[0-9;?]*[ -/]*[@-~]', '\\u001b\\][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)?', '\\u001b.?'].join('|'),
+  'g',
+)
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g
+
+/** One printable line: what the state keeps must not carry a terminal's control codes. */
+function firstLine(text: string, limit: number): string {
+  const first = text.split(/[\r\n]/)[0] ?? ''
+  const line = first.replace(ESCAPE_SEQUENCES, '').replaceAll('\t', ' ').replace(CONTROL_CHARACTERS, '').trim()
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line
+}
+
+function labelOf(input: Record<string, unknown>): string {
+  const target = input.file_path ?? input.command
+  return typeof target === 'string' ? firstLine(target, LABEL_CHARS) : ''
+}
+
+function mapRun(runs: CodemodeRun[], id: string, change: (run: CodemodeRun) => CodemodeRun): CodemodeRun[] {
+  return runs.map(run => (run.id === id ? change(run) : run))
+}
+
+function withCall(run: CodemodeRun, call: CodemodeCall): CodemodeRun {
+  const calls = [...run.calls, call]
+  const dropped = Math.max(0, calls.length - CALL_LIMIT)
+  return { ...run, calls: calls.slice(dropped), omitted: run.omitted + dropped }
+}
+
+/**
+ * Publishes one run's progress for the transcript to draw. Drawing is a side
+ * view: a failed publish never reaches the script or the model.
+ */
+class RunTracker {
+  private readonly host: BridgeHost
+  private readonly runId: string
+
+  constructor(host: BridgeHost, runId: string) {
+    this.host = host
+    this.runId = runId
+  }
+
+  begin(code: string): Promise<void> {
+    return this.safely(async () => {
+      const scriptWidth = Math.max(...code.split('\n').map(line => line.length))
+      const run: CodemodeRun = {
+        id: this.runId,
+        startedAt: await this.host.now(),
+        scriptWidth,
+        calls: [],
+        omitted: 0,
+      }
+      await this.host.publish(runs => [...runs, run].slice(-RUN_LIMIT))
+    })
+  }
+
+  startCall(call: CallMessage): Promise<void> {
+    return this.safely(async () => {
+      const entry: CodemodeCall = {
+        id: call.id,
+        tool: call.tool,
+        label: labelOf(call.input),
+        state: 'running',
+        startedAt: await this.host.now(),
+      }
+      await this.host.publish(runs => mapRun(runs, this.runId, run => withCall(run, entry)))
+    })
+  }
+
+  settleCall(id: number, settled: Settled): Promise<void> {
+    return this.safely(async () => {
+      const endedAt = await this.host.now()
+      const reason = settled.reason === undefined ? undefined : firstLine(settled.reason, REASON_CHARS)
+      const patch = { state: settled.state, endedAt, ...(reason === undefined ? {} : { reason }) }
+      await this.host.publish(runs =>
+        mapRun(runs, this.runId, run => ({
+          ...run,
+          calls: run.calls.map(call => (call.id === id ? { ...call, ...patch } : call)),
+        })),
+      )
+    })
+  }
+
+  finish(): Promise<void> {
+    return this.safely(async () => {
+      const endedAt = await this.host.now()
+      await this.host.publish(runs => mapRun(runs, this.runId, run => ({ ...run, endedAt })))
+    })
+  }
+
+  private async safely(work: () => Promise<void>): Promise<void> {
+    try {
+      await work()
+    } catch {
+      // The drawing is optional; the script's answers do not depend on it.
+    }
+  }
 }
 
 export type CodemodeOutcome = { ok: true; output: string } | { ok: false; error: string }
@@ -37,9 +154,10 @@ type RunState = {
   /** Settles when a problem is recorded, so a read blocked on the child can stop. */
   aborted: Promise<void>
   abort: () => void
+  tracker: RunTracker
 }
 
-function newRunState(): RunState {
+function newRunState(tracker: RunTracker): RunState {
   let abort = (): void => {}
   const aborted = new Promise<void>(resolve => {
     abort = resolve
@@ -52,6 +170,7 @@ function newRunState(): RunState {
     answers: [],
     aborted,
     abort,
+    tracker,
   }
 }
 
@@ -91,11 +210,15 @@ export class CodemodeBridge {
     this.timeoutMs = timeoutMs
   }
 
-  async run(code: string): Promise<CodemodeOutcome> {
+  /** `runId` is the codemode call's tool_use_id, the key its transcript row draws from. */
+  async run(code: string, runId: string): Promise<CodemodeOutcome> {
     const request: RunRequest = { code, timeoutMs: this.timeoutMs }
-    const state = newRunState()
+    const tracker = new RunTracker(this.host, runId)
+    await tracker.begin(code)
+    const state = newRunState(tracker)
     const exit = await this.readChild(JSON.stringify(request), state)
     await Promise.allSettled(state.answers)
+    await tracker.finish()
     return this.outcome(state, exit)
   }
 
@@ -142,11 +265,13 @@ export class CodemodeBridge {
   }
 
   private async serve(call: CallMessage, socketPath: string, state: RunState): Promise<void> {
-    const answer = await this.execute(call)
+    await state.tracker.startCall(call)
+    const settled = await this.execute(call)
+    await state.tracker.settleCall(call.id, settled)
     try {
       await this.host.post(`http://bridge${ANSWER_PATH}`, {
         method: 'POST',
-        body: JSON.stringify(answer),
+        body: JSON.stringify(settled.answer),
         socketPath,
       })
     } catch (error) {
@@ -154,23 +279,29 @@ export class CodemodeBridge {
     }
   }
 
-  private async execute(call: CallMessage): Promise<CallAnswer> {
-    if (!isExposedTool(call.tool)) {
-      return { id: call.id, ok: false, error: `tool ${call.tool} is not available to codemode scripts` }
-    }
+  private async execute(call: CallMessage): Promise<Settled> {
+    const refused = (reason: string): Settled => ({
+      answer: { id: call.id, ok: false, error: reason },
+      state: 'denied',
+      reason,
+    })
+    const failed = (reason: string): Settled => ({
+      answer: { id: call.id, ok: false, error: reason },
+      state: 'failed',
+      reason,
+    })
+    if (!isExposedTool(call.tool)) return refused(`tool ${call.tool} is not available to codemode scripts`)
     const input = Object.fromEntries(
       Object.entries(call.input).filter(([key]) => !RESERVED_KEYS.includes(key)),
     )
     try {
       // The tool's own schema validates the arguments; the script chose them.
       const result = await this.host.callTool({ ...input, tool: call.tool } as ToolCallArgs)
-      if (result.deny !== undefined) return { id: call.id, ok: false, error: result.deny }
-      if (result.isError === true) {
-        return { id: call.id, ok: false, error: result.text ?? `${call.tool} failed` }
-      }
-      return { id: call.id, ok: true, text: result.text ?? '' }
+      if (result.deny !== undefined) return refused(result.deny)
+      if (result.isError === true) return failed(result.text ?? `${call.tool} failed`)
+      return { answer: { id: call.id, ok: true, text: result.text ?? '' }, state: 'done' }
     } catch (error) {
-      return { id: call.id, ok: false, error: errorMessage(error) }
+      return failed(errorMessage(error))
     }
   }
 

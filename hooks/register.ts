@@ -1,6 +1,12 @@
+import { atom, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
+import { registerRender } from './render.tsx'
+
+// The state scan reads the reference from this file, so render.tsx spells its
+// own; an invariant spec fails when the two differ.
+const RUNS = atom({ plugin: 'codemode', key: 'runs' } as const, [])
 
 const TOOL_NAME = 'codemode'
 const SCRIPT_TIMEOUT_MS = 120_000
@@ -19,7 +25,9 @@ const INPUT_SCHEMA = {
   required: ['code'],
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  registerRender(on, options)
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.tool.register({ name: TOOL_NAME, description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
@@ -34,10 +42,14 @@ export const register: Register = on => {
         spawn: request => $.process.spawn(request),
         callTool: input => $.tool.call(input),
         post: (url, init) => $.http.fetch(url, init),
+        publish: async change => {
+          await update($, RUNS, change)
+        },
+        now: () => $.clock.now(),
       },
       SCRIPT_TIMEOUT_MS,
     )
-    const outcome = await bridge.run(e.code)
+    const outcome = await bridge.run(e.code, e.tool_use_id)
     return outcome.ok ? { result: outcome.output } : { deny: outcome.error }
   }).catch((_$, _e, next) => ({
     deny: `codemode failed unexpectedly: ${next.error.message ?? next.error.kind}`,

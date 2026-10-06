@@ -37,7 +37,7 @@ const RULES = {
   },
 }
 
-type Block = { type: string; id?: string; name?: string; tool_use_id?: string; content?: unknown }
+type Block = { type: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown }
 type Event = { type?: string; message?: { content?: unknown } }
 type Run = { events: Event[]; stdout: string; stderr: string; status: number | null }
 type Check = [name: string, ok: boolean]
@@ -93,11 +93,16 @@ function runClaude({ settingsFile, prompt, cwd, mode, mcpConfig, env }: RunOptio
 }
 
 /** What the model's one codemode call returned, or `undefined` when it never called it. */
-function codemodeResult(events: Event[]): { called: boolean; text: string } {
+function codemodeResult(events: Event[]): { called: boolean; text: string; code: string } {
   const all = events.flatMap(blocks)
   const use = all.find(block => block.type === 'tool_use' && block.name === TOOL)
   const result = all.find(block => block.type === 'tool_result' && block.tool_use_id === use?.id)
-  return { called: use !== undefined, text: result === undefined ? '' : resultText(result.content) }
+  const code = (use?.input as { code?: unknown } | undefined)?.code
+  return {
+    called: use !== undefined,
+    text: result === undefined ? '' : resultText(result.content),
+    code: typeof code === 'string' ? code : '',
+  }
 }
 
 type Scenario = {
@@ -112,7 +117,9 @@ type Scenario = {
   script: (file: string) => string
   /** The file's content before the run; absent means no file. */
   seed?: string
-  checks: (text: string, file: string) => Check[]
+  /** A request in words, in place of the prompt that hands the model the script. */
+  ask?: string
+  checks: (text: string, file: string, code: string) => Check[]
 }
 
 const read = (file: string): string | undefined => (existsSync(file) ? readFileSync(file, 'utf8') : undefined)
@@ -237,6 +244,21 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'mcp from the schema',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    ask: [
+      `Use the ${TOOL} tool, once, to call the connected echo tool from a script with the text e2e-ping-31.`,
+      'You are not given the echo tool\'s name: read it where the codemode tool describes its nested tools.',
+      'Then reply with the echo tool\'s answer verbatim.',
+    ].join('\n'),
+    script: () => '',
+    checks: (text, _file, code) => [
+      ['mcp from the schema: the script named the MCP tool', code.includes(MCP_TOOL)],
+      ['mcp from the schema: the result holds the server answer', text.includes('fake-echo: e2e-ping-31')],
+    ],
+  },
+  {
     name: 'mcp absent',
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'none',
@@ -263,9 +285,9 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   writeFileSync(settingsFile, JSON.stringify({ permissions: { defaultMode: 'default', ...scenario.rules.permissions } }))
   const mcpConfig = scenario.mcp === undefined ? undefined : join(folder, 'mcp.json')
   if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
-  const run = runClaude({ settingsFile, prompt: promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
-  const { called, text } = codemodeResult(run.events)
-  const checks: Check[] = [[`${scenario.name}: the codemode tool was called`, called], ...scenario.checks(text, file)]
+  const run = runClaude({ settingsFile, prompt: scenario.ask ?? promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
+  const { called, text, code } = codemodeResult(run.events)
+  const checks: Check[] = [[`${scenario.name}: the codemode tool was called`, called], ...scenario.checks(text, file, code)]
   return { name: scenario.name, checks, run, text }
 }
 

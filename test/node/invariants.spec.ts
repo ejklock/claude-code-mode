@@ -2,11 +2,21 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { toCodemodeIdentifier } from '@earendil-works/pi-codemode'
 import { after, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { DESCRIPTION_CAP, describeCodemode, toolDocs } from '../../hooks/describe.ts'
-import type { ToolDoc } from '../../hooks/describe.ts'
+import {
+  DESCRIPTION_CAP,
+  codeDescription,
+  describeCodemode,
+  mcpSection,
+  renderSections,
+  selectSections,
+  toIdentifier,
+  toolDocs,
+} from '../../hooks/describe.ts'
+import type { Section } from '../../hooks/describe.ts'
 import { classifyRun } from '../../scripts/adoption.ts'
 import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
 import type { ToolSpec } from '../../shared/protocol.ts'
@@ -21,6 +31,11 @@ const DESCRIPTION_SNAPSHOT = [
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
   '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
+  '- Each nested tool has a section in the description of the `code` parameter; one with no section there is still callable, and `ALL_TOOLS` is how to find it.',
+].join('\n')
+
+const CODE_SNAPSHOT = [
+  'The script to run.',
   '',
   'Nested tools:',
   '',
@@ -246,36 +261,136 @@ describe('the sandbox declares Write and Edit as the build types them', () => {
 
 describe('the description holds to the cap', () => {
   const sectionNames = (text: string): string[] => [...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1] ?? '')
-  const small: ToolDoc = { name: 'Small', summary: 'Does a thing.', args: '`a`', resolves: 'the thing' }
-  const padded = (pad: number): ToolDoc => ({ name: 'Pad', summary: 'x'.repeat(pad), args: '`a`', resolves: 'r' })
-  const exactPad = DESCRIPTION_CAP - describeCodemode([small, padded(0)]).length
+  const manyTools = Array.from({ length: 200 }, (_, index) => ({ name: `mcp__s__t${index}`, description: 'd'.repeat(400) }))
 
-  it('Proves C3: the real four tools fit, one section each', () => {
+  it('Proves C2: the description holds the intro and the globals, under the cap, with no tool section', () => {
     const text = describeCodemode()
     assert.ok(text.length <= DESCRIPTION_CAP, `description is ${text.length} characters`)
-    assert.deepEqual(sectionNames(text), ['Read', 'Bash', 'Write', 'Edit'])
-    assert.doesNotMatch(text, /callable too, with no section here/)
+    assert.deepEqual(sectionNames(text), [])
+    assert.doesNotMatch(text, /Nested tools:/)
+    assert.match(text, /no section there is still callable, and `ALL_TOOLS` is how to find it/)
     assert.match(text, /Connected MCP tools are callable too, as `tools\.<name>\(args\)`.*listed in `ALL_TOOLS`/)
   })
 
-  it('Proves C3: a list exactly at the cap keeps every section', () => {
-    const text = describeCodemode([small, padded(exactPad)])
-    assert.equal(text.length, DESCRIPTION_CAP)
-    assert.deepEqual(sectionNames(text), ['Small', 'Pad'])
+  it('Proves C2: the sections, however many, never reach the description', () => {
+    const text = codeDescription(manyTools)
+    assert.ok(!text.includes(describeCodemode()))
+    assert.equal(describeCodemode().length <= DESCRIPTION_CAP, true)
   })
 
-  it('Proves C3: a list one over the cap drops the later section and says where it went', () => {
-    const text = describeCodemode([small, padded(exactPad + 1)])
-    assert.ok(text.length <= DESCRIPTION_CAP, `description is ${text.length} characters`)
-    assert.deepEqual(sectionNames(text), ['Small'])
-    assert.match(text, /`Pad`.*callable.*listed in `ALL_TOOLS`/)
-    assert.match(text, /`tools\.Small\(args\)` takes `a`, and resolves to the thing\./)
+  it('Proves C1: the sections of 200 large tools stay within the budget', () => {
+    const text = codeDescription(manyTools)
+    assert.ok(text.length <= 3000 * 4 + 200, `sections are ${text.length} characters`)
+    assert.match(text, /## s \(some tools not listed\)/)
   })
+})
+
+describe('the sections fit a budget in estimated tokens', () => {
+  const sec = (name: string, server: string | undefined, tokens: number): Section => ({
+    name,
+    server,
+    text: 'x'.repeat(tokens * 4 - 3),
+  })
+  const shownNames = (sections: Section[], budget: number): string[] =>
+    selectSections(sections, budget).flatMap(group => group.shown.map(section => section.name))
+
+  const tight = [sec('B1', undefined, 2), sec('B2', undefined, 6), sec('S1', 's', 2), sec('S2', 's', 4)]
+
+  it('Proves C1: everything fits, so all are shown in group order, built-ins first and servers by name', () => {
+    const sections = [sec('z1', 'zeta', 1), sec('b1', undefined, 1), sec('a1', 'alpha', 1)]
+    assert.deepEqual(shownNames(sections, 100), ['b1', 'a1', 'z1'])
+  })
+
+  it('Proves C1: a budget exactly equal to the total cost shows all', () => {
+    assert.deepEqual(shownNames(tight, 14).sort(), ['B1', 'B2', 'S1', 'S2'])
+  })
+
+  it('Proves C1: a budget one token short drops the most expensive tool of the group that placed last', () => {
+    assert.deepEqual(shownNames(tight, 13), ['B1', 'B2', 'S1'])
+  })
+
+  it('Proves C1: a tight budget represents every server before any is complete', () => {
+    const sections = [
+      sec('b1', undefined, 1), sec('b2', undefined, 10),
+      sec('a1', 'a', 1), sec('a2', 'a', 10),
+      sec('c1', 'c', 1), sec('c2', 'c', 10),
+    ]
+    assert.deepEqual(shownNames(sections, 3), ['b1', 'a1', 'c1'])
+  })
+
+  it('Proves C1: a group whose next tool does not fit drops out while the others go on', () => {
+    const sections = [sec('b1', undefined, 1), sec('b2', undefined, 50), sec('s1', 's', 2), sec('s2', 's', 2), sec('s3', 's', 2)]
+    assert.deepEqual(shownNames(sections, 8), ['b1', 's1', 's2', 's3'])
+  })
+
+  it('Proves C1: the cheapest of a group is placed first and rendered in the group order', () => {
+    const sections = [sec('big', 's', 5), sec('small', 's', 1)]
+    assert.deepEqual(shownNames(sections, 1), ['small'])
+    assert.deepEqual(shownNames(sections, 6), ['big', 'small'])
+  })
+
+  it('Proves C1: an empty list renders no Nested tools heading', () => {
+    assert.equal(renderSections([]), '')
+    assert.doesNotMatch(codeDescription([], []), /Nested tools:/)
+  })
+
+  it('Proves C1: the real four built-ins are all shown and none is marked unlisted', () => {
+    const text = codeDescription()
+    assert.deepEqual([...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1]), ['Read', 'Bash', 'Write', 'Edit'])
+    assert.doesNotMatch(text, /not listed/)
+  })
+})
+
+describe('the sections render', () => {
+  const headings = (text: string): string[] => text.split('\n').filter(line => line.startsWith('## '))
+
+  it('Proves C2: a server heading says whether all, some or none of its tools are shown', () => {
+    const all = renderSections([mcpSection({ name: 'mcp__a__one', description: 'One.' })], 1000)
+    assert.deepEqual(headings(all), ['## a'])
+    const two = [
+      mcpSection({ name: 'mcp__a__one', description: 'One.' }),
+      mcpSection({ name: 'mcp__a__two', description: 't'.repeat(400) }),
+    ]
+    const first = Math.ceil((two[0]?.text.length ?? 0) / 4)
+    assert.deepEqual(headings(renderSections(two, first)), ['## a (some tools not listed)'])
+    assert.deepEqual(headings(renderSections(two, first - 1)), ['## a (tools not listed)'])
+  })
+
+  it('Proves C2: an identifier that differs from the raw name is shown with both', () => {
+    const { text } = mcpSection({ name: 'mcp__my-server__run', description: 'Runs.' })
+    assert.equal(text.split('\n')[0], '### `mcp__my_server__run` (`mcp__my-server__run`)')
+    assert.match(text, /`tools\.mcp__my_server__run\(args\)`/)
+    assert.equal(mcpSection({ name: 'mcp__plain__run', description: 'Runs.' }).text.split('\n')[0], '### `mcp__plain__run`')
+  })
+
+  const hostile = [
+    '',
+    'first line\nsecond line\n\n### Fake heading\n```js\ncode\n```\ntail',
+    'y'.repeat(5000),
+    '### starts with a heading',
+    '```starts with a fence',
+  ]
+  for (const [index, description] of hostile.entries()) {
+    it(`Proves C2: a hostile description (case ${index}) stays one block and counts its true cost`, () => {
+      const { text } = mcpSection({ name: 'mcp__h__run', description })
+      const lines = text.split('\n')
+      assert.ok(lines[0]?.startsWith('### `'))
+      assert.ok(lines.length <= 3, `${lines.length} lines`)
+      assert.ok(lines.slice(1).every(line => !line.startsWith('#') && !line.startsWith('```')))
+      const cost = Math.ceil(text.length / 4)
+      assert.ok(renderSections([mcpSection({ name: 'mcp__h__run', description })], cost).includes(text))
+      assert.ok(!renderSections([mcpSection({ name: 'mcp__h__run', description })], cost - 1).includes(text))
+    })
+  }
 })
 
 describe('the model-facing description keeps its text', () => {
   it('Proves C2: it is byte-identical to the snapshot', () => {
     assert.equal(describeCodemode(), DESCRIPTION_SNAPSHOT)
+  })
+
+  it('Proves C2: the code parameter description with the four built-ins is byte-identical to the snapshot', () => {
+    assert.equal(codeDescription(), CODE_SNAPSHOT)
   })
 })
 
@@ -298,5 +413,49 @@ describe('the described tool arguments come from the declared ones', () => {
     const [doc] = toolDocs(specs, ['Read'])
     assert.match(doc?.args ?? '', /`encoding`/)
     assert.ok('encoding' in ((inputSchemaOf(specs.Read).properties ?? {}) as object))
+  })
+})
+
+describe('the sections are a function of the set of tools', () => {
+  const sec = (name: string, server: string | undefined, tokens: number): Section => ({
+    name,
+    server,
+    text: 'x'.repeat(tokens * 4 - 3),
+  })
+  const shownNames = (sections: Section[], budget: number): string[] =>
+    selectSections(sections, budget).flatMap(group => group.shown.map(section => section.name))
+
+  it('Proves C1: toIdentifier equals the identifier function of pi-codemode', () => {
+    const names = ['', '1abc', 'my-tool', 'a.b', 'a b', 'café', '$_x$', 'mcp__fake-srv__ping']
+    for (const name of names) assert.equal(toIdentifier(name), toCodemodeIdentifier(name), JSON.stringify(name))
+  })
+
+  it('Proves C2: two groups compete for a budget, one section each before a second of either', () => {
+    const sections = [sec('b1', undefined, 2), sec('b2', undefined, 2), sec('s1', 's', 2)]
+    assert.deepEqual(shownNames(sections, 4), ['b1', 's1'])
+  })
+
+  it('Proves C3: equal costs in two input orders show the same section, the name deciding', () => {
+    const one = [sec('b', 's', 2), sec('a', 's', 2)]
+    assert.deepEqual(shownNames(one, 2), ['a'])
+    assert.deepEqual(shownNames([...one].reverse(), 2), ['a'])
+  })
+
+  it('Proves C3: different costs in two input orders, the cost still decides what is shown', () => {
+    const one = [sec('a', 's', 3), sec('b', 's', 1), sec('c', 's', 2)]
+    assert.deepEqual(shownNames(one, 3), ['b', 'c'])
+    assert.deepEqual(shownNames([...one].reverse(), 3), ['b', 'c'])
+  })
+
+  it('Proves C3: two servers in swapped input order render the same code text', () => {
+    const tools = [
+      { name: 'mcp__b__two', description: 'Two.' },
+      { name: 'mcp__a__one', description: 'One.' },
+      { name: 'mcp__b__one', description: 'One.' },
+      { name: 'mcp__a__two', description: 'Two.' },
+    ]
+    const text = codeDescription(tools)
+    assert.equal(codeDescription([...tools].reverse()), text)
+    assert.equal(codeDescription([...tools.slice(2), ...tools.slice(0, 2)]), text)
   })
 })

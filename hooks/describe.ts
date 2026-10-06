@@ -1,5 +1,5 @@
 import { EXPOSED_TOOLS, TOOL_SPECS } from '../shared/protocol.ts'
-import type { ToolArg, ToolSpec } from '../shared/protocol.ts'
+import type { McpTool, ToolArg, ToolSpec } from '../shared/protocol.ts'
 
 /** The line the system prompt carries so the model reaches for codemode unprompted. */
 export const GUIDELINE =
@@ -50,7 +50,11 @@ const GLOBALS = [
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
   '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
+  '- Each nested tool has a section in the description of the `code` parameter; one with no section there is still callable, and `ALL_TOOLS` is how to find it.',
 ].join('\n')
+
+/** The first line of the `code` property's description. */
+const CODE_LEAD = 'The script to run.'
 
 function toolSection(doc: ToolDoc): string {
   return [
@@ -62,26 +66,126 @@ function toolSection(doc: ToolDoc): string {
 /** The most characters of a tool's description the build sends to the model. */
 export const DESCRIPTION_CAP = 2048
 
-function omittedNote(omitted: readonly ToolDoc[]): string[] {
-  if (omitted.length === 0) return []
-  const names = omitted.map(doc => `\`${doc.name}\``).join(', ')
-  return [`${names}: callable too, with no section here, and listed in \`ALL_TOOLS\`.`]
+/** What the sections may cost together, in estimated tokens (characters divided by four). */
+export const SECTIONS_BUDGET = 3000
+const CHARS_PER_TOKEN = 4
+
+/** One nested tool's section; `server` is absent for the built-ins. */
+export type Section = {
+  name: string
+  server: string | undefined
+  text: string
 }
 
-function assemble(kept: readonly ToolDoc[], omitted: readonly ToolDoc[]): string {
-  const nested = ['Nested tools:', ...kept.map(toolSection)].join('\n\n')
-  return [INTRO, GLOBALS, nested, ...omittedNote(omitted)].join('\n\n')
+/** A group's sections as the budget left them: `shown` in the group's order, out of `total`. */
+export type Group = {
+  server: string | undefined
+  shown: Section[]
+  total: number
+}
+
+const costOf = (section: Section): number => Math.ceil(section.text.length / CHARS_PER_TOKEN)
+
+/** The identifier a script uses for a tool: a character invalid in an identifier becomes `_`. */
+export function toIdentifier(name: string): string {
+  let identifier = ''
+  for (const char of name) {
+    const isValid = identifier === '' ? /^[A-Za-z_$]$/.test(char) : /^[A-Za-z0-9_$]$/.test(char)
+    identifier += isValid ? char : '_'
+  }
+  return identifier === '' ? '_' : identifier
+}
+
+/** The server of `mcp__server__tool`: the part between the first two `__`. */
+function serverOf(name: string): string {
+  return name.split('__')[1] ?? ''
+}
+
+export function builtinSection(doc: ToolDoc): Section {
+  return { name: doc.name, server: undefined, text: toolSection(doc) }
+}
+
+// A description is data, not markup: one line with no fence and no leading `#`
+// cannot end its section or open another.
+function inert(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().replace(/`{3,}/g, "'''").replace(/^#/, '\\#')
+}
+
+/** An MCP tool's section: its heading, its own description, and how a script calls it. */
+export function mcpSection(tool: McpTool): Section {
+  const id = toIdentifier(tool.name)
+  const heading = id === tool.name ? `### \`${id}\`` : `### \`${id}\` (\`${inert(tool.name)}\`)`
+  const description = inert(tool.description)
+  const call = `\`tools.${id}(args)\` takes an open object of arguments, and resolves to the tool's text.`
+  const lines = [heading, ...(description === '' ? [] : [description]), call]
+  return { name: tool.name, server: serverOf(tool.name), text: lines.join('\n') }
+}
+
+function serversOf(sections: readonly Section[]): string[] {
+  const names = new Set(sections.flatMap(section => (section.server === undefined ? [] : [section.server])))
+  return [...names].sort((a, b) => a.localeCompare(b))
 }
 
 /**
- * The model-facing description: the intro, the globals, then one section per
- * tool in `docs` order. When the whole does not fit the cap, the sections that
- * do not fit are dropped from the end and named as callable through `ALL_TOOLS`.
+ * Picks the sections that fit `budget` tokens: in each round every group, the
+ * built-ins first and then the servers by name, places its cheapest remaining
+ * section; a group whose next one does not fit drops out while the others go on.
  */
-export function describeCodemode(docs: readonly ToolDoc[] = EXPOSED_DOCS): string {
-  for (let kept = docs.length; kept > 0; kept -= 1) {
-    const text = assemble(docs.slice(0, kept), docs.slice(kept))
-    if (text.length <= DESCRIPTION_CAP) return text
+export function selectSections(sections: readonly Section[], budget: number): Group[] {
+  const servers: (string | undefined)[] = [undefined, ...serversOf(sections)]
+  // Unlike Pi, which keeps the input order, a server's ties and shown order go by name,
+  // so the text depends on the set of tools and not on the order they arrive in;
+  // the built-ins are a fixed list and keep its order.
+  const inGroupOrder = (server: string | undefined, list: Section[]): Section[] =>
+    server === undefined ? list : list.sort((a, b) => a.name.localeCompare(b.name))
+  const groups = servers
+    .map(server => ({ server, all: inGroupOrder(server, sections.filter(section => section.server === server)) }))
+    .filter(group => group.all.length > 0)
+  const queues = groups.map(group => [...group.all].sort((a, b) => costOf(a) - costOf(b)))
+  const shown = new Set<Section>()
+  let remaining = budget
+  let active = queues
+  while (active.length > 0) {
+    active = active.filter(queue => {
+      const next = queue.shift()
+      if (next === undefined) return false
+      if (costOf(next) > remaining) return false
+      remaining -= costOf(next)
+      shown.add(next)
+      return queue.length > 0
+    })
   }
-  return assemble([], docs)
+  return groups.map(group => ({
+    server: group.server,
+    shown: group.all.filter(section => shown.has(section)),
+    total: group.all.length,
+  }))
+}
+
+function serverHeading(group: Group): string[] {
+  if (group.server === undefined) return []
+  if (group.shown.length === group.total) return [`## ${group.server}`]
+  const listing = group.shown.length === 0 ? 'tools not listed' : 'some tools not listed'
+  return [`## ${group.server} (${listing})`]
+}
+
+/** The sections that fit the budget, under `Nested tools:`; empty when there is no tool at all. */
+export function renderSections(sections: readonly Section[], budget: number = SECTIONS_BUDGET): string {
+  if (sections.length === 0) return ''
+  const parts = selectSections(sections, budget).flatMap(group => [
+    ...serverHeading(group),
+    ...group.shown.map(section => section.text),
+  ])
+  return ['Nested tools:', ...parts].join('\n\n')
+}
+
+/** The `code` property's description: what the script is, then one section per nested tool. */
+export function codeDescription(mcpTools: readonly McpTool[] = [], docs: readonly ToolDoc[] = EXPOSED_DOCS): string {
+  const sections = renderSections([...docs.map(builtinSection), ...mcpTools.map(mcpSection)])
+  return sections === '' ? CODE_LEAD : `${CODE_LEAD}\n\n${sections}`
+}
+
+/** The tool's own description: the intro and the globals; the sections ride in the `code` property. */
+export function describeCodemode(): string {
+  return [INTRO, GLOBALS].join('\n\n')
 }

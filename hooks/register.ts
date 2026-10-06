@@ -1,8 +1,8 @@
 import { atom, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { Register, ToolInfo } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
-import { GUIDELINE, describeCodemode } from './describe.ts'
+import { GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
 import { registerRender } from './render.tsx'
 import { CODEMODE_TOOL_ID } from '../shared/protocol.ts'
 
@@ -15,20 +15,49 @@ const SCRIPT_TIMEOUT_MS = 120_000
 
 const TOOL_ID = CODEMODE_TOOL_ID
 
-const INPUT_SCHEMA = {
+/** The `code` property's description carries the tool sections, which the engine sends whole. */
+const inputSchemaWith = (codeText: string) => ({
   type: 'object',
-  properties: { code: { type: 'string', description: 'The script to run.' } },
+  properties: { code: { type: 'string', description: codeText } },
   required: ['code'],
+})
+
+type ListTools = () => Promise<ToolInfo[]>
+
+/** The `code` description for the tools connected now; `undefined` when the list cannot be read. */
+async function readCodeText(list: ListTools): Promise<string | undefined> {
+  try {
+    const tools = await list()
+    const mcp = tools.filter(tool => tool.mcp && tool.name !== TOOL_ID)
+    return codeDescription(mcp.map(({ name, description }) => ({ name, description })))
+  } catch {
+    return undefined
+  }
 }
 
 export const register: Register = (on, options) => {
   registerRender(on, options)
+  // Lost on a hot reload, which costs one more registration of the same text.
+  let registeredText: string | undefined
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: INPUT_SCHEMA })
+    const codeText = (await readCodeText(() => $.tool.list())) ?? codeDescription()
+    await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: inputSchemaWith(codeText) })
+    registeredText = codeText
     return started
   })
+
+  // MCP servers may connect or change after the session starts; the prompt cache
+  // is spent only when the rendered sections differ from the last registered.
+  on('turn.start', async ($, e, next) => {
+    const codeText = await readCodeText(() => $.tool.list())
+    if (codeText !== undefined && codeText !== registeredText) {
+      await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: inputSchemaWith(codeText) })
+      registeredText = codeText
+    }
+    return next(e)
+  }).catch((_$, e, next) => next(e))
 
   on('tool.describe', { tool: TOOL_ID }, () => ({ description: describeCodemode(), isDeferred: false })).catch(
     (_$, e, next) => next(e),

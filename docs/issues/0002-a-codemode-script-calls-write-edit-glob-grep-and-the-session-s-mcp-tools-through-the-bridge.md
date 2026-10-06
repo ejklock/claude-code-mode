@@ -44,6 +44,10 @@ Found during slicing, 2026-10-06:
 - The declarations the child receives list only the connected tools: a disconnected server's tools are absent.
 - No source file calls `$.mcp.call`. Proof: the existing invariants check still passes.
 - A live demo is recorded here: a coding task in a scratch folder that uses MCP, writes and reads in one script.
+- Slice 2b, the sections in the `code` parameter's description, within 3,000 estimated tokens and following the connected tools:
+  - adoption, `node scripts/adoption.ts` with 5 runs on 2026-10-06 (no change from issue 0004): codemode used in 5 of 5 valid runs, every run called `mcp__codemode__codemode` only;
+  - the mod registers at `session.start` and again at `turn.start` only when the rendered sections differ from the last registered, so the prompt cache is spent on a change alone;
+  - the e2e scenario `mcp from the schema` passes: a headless run asked, without the tool's name, for the connected echo tool's answer got `fake-echo: e2e-ping-31` from a script that named `mcp__fake__echo`. The request's tool definition cannot be read from the headless stream, and the model also holds the MCP tool's own definition, so the scenario does not isolate the `code` text as the source of the name.
 
 ### Plan
 

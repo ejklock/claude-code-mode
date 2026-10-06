@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { EXPOSED_DOCS, GUIDELINE, describeCodemode, toolDocs } from '../hooks/describe.ts'
+import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
 import type { ToolDoc } from '../hooks/describe.ts'
 import { ANSWER_PATH, EXPOSED_TOOLS } from '../shared/protocol.ts'
 
@@ -598,11 +598,8 @@ describe('the codemode description', () => {
     expect(answer.description).toContain('`text(value)`')
     expect(answer.description).toContain('`exit()`')
     expect(answer.description).toContain('`ALL_TOOLS`')
-    expect(answer.description).toContain('`tools.Read(args)` takes `file_path`')
-    expect(answer.description).toContain('`offset`')
-    expect(answer.description).toContain('`limit`')
-    expect(answer.description).toContain('`tools.Bash(args)` takes `command`')
-    expect(answer.description).toContain('`timeout`')
+    expect(answer.description).not.toContain('Nested tools:')
+    expect(answer.description.length).toBeLessThanOrEqual(2048)
   })
 
   test('Proves C1: another tool keeps its description and its placement', async ($, on) => {
@@ -614,20 +611,78 @@ describe('the codemode description', () => {
   test('Proves C1: the builder gives one section per exposed tool, in list order', () => {
     const extra = { name: 'Grep', summary: 'Searches.', args: '`pattern`', resolves: 'the matches' }
     const sections = (docs: readonly ToolDoc[]) =>
-      [...describeCodemode(docs).matchAll(/^### `(\w+)`$/gm)].map(match => match[1])
+      [...codeDescription([], docs).matchAll(/^### `(\w+)`$/gm)].map(match => match[1])
 
     expect(sections(EXPOSED_DOCS)).toEqual([...EXPOSED_TOOLS])
     expect(sections([...EXPOSED_DOCS, extra])).toEqual([...EXPOSED_TOOLS, 'Grep'])
-    expect(describeCodemode([...EXPOSED_DOCS, extra])).toContain('`tools.Grep(args)` takes `pattern`')
+    expect(codeDescription([], [...EXPOSED_DOCS, extra])).toContain('`tools.Grep(args)` takes `pattern`')
   })
 
-  test('Proves C3: the registered description names Write and Edit within the cap', async ($, on) => {
-    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
-    const answer = await $.tool.describe({ tool: CODEMODE, description: 'registered', provider: ENGINE_ORIGIN })
-    expect(answer.description.length).toBeLessThanOrEqual(2048)
-    expect(answer.description).toContain('`tools.Write(args)` takes `file_path`')
-    expect(answer.description).toContain('`tools.Edit(args)` takes `file_path`')
-    expect(answer.description).toContain('`replace_all`')
+  test('Proves C3: the sections name Write and Edit with their arguments', () => {
+    const text = codeDescription()
+    expect(text).toContain('`tools.Write(args)` takes `file_path`')
+    expect(text).toContain('`tools.Edit(args)` takes `file_path`')
+    expect(text).toContain('`replace_all`')
+  })
+})
+
+/** Stands in for the engine's registration and the session's tool list; `registered` collects each call. */
+function standInRegistration(on: On, tools: () => Listed[]) {
+  const registered: { description: string; code: string }[] = []
+  on('tool.register', (_$, e) => {
+    const properties = (e.inputSchema as { properties: { code: { description: string } } }).properties
+    registered.push({ description: e.description ?? '', code: properties.code.description })
+    return { value: { tool: `mcp__codemode__${e.name}` } }
+  })
+  on('tool.list', () => ({ value: tools() }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  return registered
+}
+
+const startSession = ($: Engine) => $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+const startTurn = ($: Engine, turnId: string) => $.turn.start({ text: 'go', turnId })
+
+describe('the sections follow the connected tools', () => {
+  test('Proves C3: session start registers the short description and the sections in the code property', async ($, on) => {
+    const registered = standInRegistration(on, () => [ECHO])
+    await startSession($)
+    expect(registered).toHaveLength(1)
+    expect(registered[0]?.description).toBe(describeCodemode())
+    expect(registered[0]?.description).not.toContain('### ')
+    expect(registered[0]?.code).toContain('### `mcp__fake__echo`')
+    expect(registered[0]?.code).toContain('## fake')
+    expect(registered[0]?.code).toContain('### `Read`')
+  })
+
+  test('Proves C3: a tool that connects later is registered with its section at the next turn', async ($, on) => {
+    let listed: Listed[] = []
+    const registered = standInRegistration(on, () => listed)
+    await startSession($)
+    listed = [ECHO]
+    await startTurn($, 't1')
+    expect(registered).toHaveLength(2)
+    expect(registered[0]?.code).not.toContain('mcp__fake__echo')
+    expect(registered[1]?.code).toContain('### `mcp__fake__echo`')
+  })
+
+  test('Proves C3: unchanged tools register nothing again', async ($, on) => {
+    const registered = standInRegistration(on, () => [ECHO])
+    await startSession($)
+    await startTurn($, 't1')
+    await startTurn($, 't2')
+    expect(registered).toHaveLength(1)
+  })
+
+  test('Proves C3: a list that rejects registers the built-ins and the run goes on', async ($, on) => {
+    const registered = standInRegistration(on, () => {
+      throw new Error('the list is gone')
+    })
+    await startSession($)
+    await startTurn($, 't1')
+    expect(registered).toHaveLength(1)
+    expect(registered[0]?.code).toContain('### `Read`')
+    expect(registered[0]?.code).not.toMatch(/^## /m)
   })
 })
 
@@ -644,7 +699,7 @@ describe('the codemode description source', () => {
         },
       },
     } as const
-    const description = describeCodemode(toolDocs(specs, ['Grep']))
+    const description = codeDescription([], toolDocs(specs, ['Grep']))
     expect(description).toContain('`tools.Grep(args)` takes `pattern`, optional `glob` (file filter), and resolves to the matches.')
   })
 })

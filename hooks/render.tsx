@@ -15,10 +15,29 @@ const GLYPHS = { running: '…', done: '✓', denied: '✗', failed: '✗' } as 
 const LONG_PATH_CHARS = 30
 const KEPT_SEGMENTS = 2
 const LABEL_MAX = 30
-/** The widest a box's content grows, so one long script line never stretches the row. */
+/** The widest a box's content grows without a measured surface, so one long script line never stretches the row. */
 const WIDTH_CAP = 100
 /** Border and padding on both sides of a box's content. */
 const FRAME = 4
+/** The narrowest content a measured surface gets; a box on a viewport under FRAME + this overflows it. */
+const MIN_CONTENT = 4
+const ZERO_WIDTH: [number, number][] = [
+  [0x300, 0x36f],
+  [0x200b, 0x200f],
+  [0xfe00, 0xfe0f],
+]
+const DOUBLE_WIDTH: [number, number][] = [
+  [0x1100, 0x115f],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1f64f],
+  [0x1f900, 0x1f9ff],
+  [0x20000, 0x3fffd],
+]
 const GAP = '  '
 
 type Columns = { tool: number; label: number; tail: number }
@@ -80,17 +99,54 @@ function rowsOf(run: CodemodeRun | undefined): Row[] {
   return (run?.calls ?? []).map(call => ({ call, label: clip(shorten(call.label)), tail: tailOf(call) }))
 }
 
-/** The one width both boxes of a call share, from the script's longest line, the rows and the surface. */
-function contentWidth(longest: number, columns: Columns, surfaceColumns: number | undefined): number {
-  const cap = surfaceColumns === undefined ? WIDTH_CAP : Math.min(WIDTH_CAP, Math.max(TITLE.length, surfaceColumns - FRAME))
-  return Math.min(cap, Math.max(TITLE.length, longest, rowWidth(columns)))
+/** The width a measured surface leaves a box's content, never under a few columns so the `…` cut stays legible; the transcript takes no margin, as the engine's own rules reach the same edge. */
+function surfaceWidth(surfaceColumns: number): number {
+  return Math.max(MIN_CONTENT, surfaceColumns - FRAME)
 }
 
-/** Cuts every line wider than the box with `…`, so none wraps inside it. */
+/** The one width both boxes of a call share: the surface's room when measured, else the script's and the rows'. */
+function contentWidth(longest: number, columns: Columns, surfaceColumns: number | undefined): number {
+  if (surfaceColumns !== undefined) return surfaceWidth(surfaceColumns)
+  return Math.min(WIDTH_CAP, Math.max(TITLE.length, longest, rowWidth(columns)))
+}
+
+/** The result box's width: the surface's room when measured, else the run's stored script width, else none. */
+function resultWidth(run: CodemodeRun | undefined, surfaceColumns: number | undefined): number | undefined {
+  if (surfaceColumns !== undefined) return surfaceWidth(surfaceColumns)
+  return run?.scriptWidth === undefined ? undefined : contentWidth(run.scriptWidth, columnsOf(rowsOf(run)), undefined)
+}
+
+function within(point: number, ranges: [number, number][]): boolean {
+  return ranges.some(([low, high]) => point >= low && point <= high)
+}
+
+/** A character's terminal columns from short range lists; no full Unicode width table, no grapheme clusters. */
+function charWidth(point: number): number {
+  if (within(point, ZERO_WIDTH)) return 0
+  return within(point, DOUBLE_WIDTH) ? 2 : 1
+}
+
+function columnsWide(text: string): number {
+  return [...text].reduce((total, char) => total + charWidth(char.codePointAt(0) ?? 0), 0)
+}
+
+/** The longest start of the line that fits `room` columns, never splitting a code point. */
+function fitting(line: string, room: number): string {
+  let used = 0
+  let kept = ''
+  for (const char of line) {
+    used += charWidth(char.codePointAt(0) ?? 0)
+    if (used > room) break
+    kept += char
+  }
+  return kept
+}
+
+/** Cuts every line wider than the box, in terminal columns, with `…`, so none wraps inside it. */
 function cutLines(text: string, width: number): string {
   return text
     .split('\n')
-    .map(line => (line.length > width ? `${line.slice(0, width - 1)}…` : line))
+    .map(line => (columnsWide(line) > width ? `${fitting(line, width - 1)}…` : line))
     .join('\n')
 }
 
@@ -127,7 +183,7 @@ export const registerRender: Register = on => {
         paddingX={1}
       >
         <Box key="title">
-          <Text dimColor>{TITLE}</Text>
+          <Text dimColor>{cutLines(TITLE, width)}</Text>
         </Box>
         <Code source={cutLines(script, width)} language="javascript" />
         {rows.length > 0 ? (
@@ -158,11 +214,8 @@ export const registerRender: Register = on => {
     if (e.props.tool !== CODEMODE_TOOL || typeof output !== 'string') return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const run = await runOf($, e.requestId)
-    // Without the run's script width the box shrink-wraps its output.
-    const width =
-      run?.scriptWidth === undefined
-        ? undefined
-        : contentWidth(run.scriptWidth, columnsOf(rowsOf(run)), e.viewport?.columns)
+    // Without a viewport or the run's script width the box shrink-wraps its output.
+    const width = resultWidth(run, e.viewport?.columns)
     const fit = (text: string): string => (width === undefined ? text : cutLines(text, width))
     const boxWidth = width === undefined ? {} : { width: width + FRAME }
 

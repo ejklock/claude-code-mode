@@ -462,6 +462,7 @@ describe('the polished layout', () => {
     ['a line at the cap plus 1 is cut', 101, undefined, `${'x'.repeat(99)}…`],
     ['a line far wider than the cap is cut', 400, undefined, `${'x'.repeat(99)}…`],
     ['a narrow surface caps at its width minus the frame', 60, 50, `${'x'.repeat(45)}…`],
+    ['a wide surface is not capped at 100', 400, 160, `${'x'.repeat(155)}…`],
   ]
 
   for (const [name, length, columns, expected] of cutCases) {
@@ -681,5 +682,125 @@ describe('every other tool and the state bound', () => {
     expect(run?.omitted).toBe(2)
     expect(run?.calls[0]?.id).toBe(3)
     expect(run?.calls.at(-1)?.id).toBe(total)
+  })
+})
+
+describe('a known viewport fills the width the transcript gives', () => {
+  const room = (columns: number): number => Math.max(4, columns - FRAME)
+  const cutTo = (text: string, width: number): string => (text.length > width ? `${text.slice(0, width - 1)}…` : text)
+
+  const mountBoth = async (
+    $: Engine,
+    surface: (typeof SURFACES)[number],
+    code: string,
+    output: string,
+    columns: number | undefined,
+    isErrored: boolean,
+  ) => {
+    const viewport = columns === undefined ? {} : { viewport: { columns, rows: 40 } }
+    const use = await $.ui.mount({
+      plugin: 'codemode',
+      surface,
+      component: 'ToolUse',
+      props: toolRow('toolu_seed', CODEMODE, { code }),
+      requestId: 'toolu_seed',
+      ...viewport,
+    })
+    const result = await $.ui.mount({
+      plugin: 'codemode',
+      surface,
+      component: 'ToolResult',
+      props: { tool_use_id: 'toolu_seed', tool: CODEMODE, output, isErrored },
+      requestId: 'toolu_seed',
+      ...viewport,
+    })
+    return { use, result }
+  }
+
+  const cases: [string, string, string, number, boolean][] = [
+    ['a one-line script and output at 200 columns', 'text(1)', 'ok', 200, false],
+    ['a one-line script and output at 80 columns', 'text(1)', 'ok', 80, false],
+    ['a 150-character script at 120 columns', 'x'.repeat(150), 'ok', 120, false],
+    ['a 150-character output at 120 columns', 'text(1)', 'o'.repeat(150), 120, false],
+    ['a 21-column viewport, the title width plus the frame', 'text(1)', 'ok', 21, false],
+    ['a 20-column viewport, one under the title width plus the frame', 'text(1)', 'ok', 20, false],
+    ['a 22-column viewport, one over the title width plus the frame', 'text(1)', 'ok', 22, false],
+    ['an 8-column viewport, which cuts the title', 'text(1)', 'ok', 8, false],
+    ['the error variant at 20 columns', 'text(1)', 'e'.repeat(50), 20, true],
+    ['the error variant at 90 columns', 'text(1)', 'e'.repeat(150), 90, true],
+  ]
+
+  for (const [name, code, output, columns, isErrored] of cases) {
+    test(`Proves C1: both boxes take the available width for ${name}`, async ($, on) => {
+      host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+      for (const surface of SURFACES) {
+        const { use, result } = await mountBoth($, surface, code, output, columns, isErrored)
+        const width = room(columns)
+        expect((await use.find({ key: 'codemode-row' }))?.props.width).toBe(width + FRAME)
+        expect((await result.find({ key: 'codemode-result' }))?.props.width).toBe(width + FRAME)
+        expect((await use.find({ key: 'divider' }))?.text).toBe('─'.repeat(width))
+        expect((await use.find({ type: 'Code' }))?.props.source).toBe(cutTo(code, width))
+        const shown = (await result.find({ key: isErrored ? 'error' : 'output' }))?.text
+        expect(shown).toBe(cutTo(isErrored ? `✗ ${output}` : output, width))
+        await use.unmount()
+        await result.unmount()
+      }
+    })
+  }
+
+  test('Proves C1: the title is cut with the lines when the box is narrower than it', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+    for (const surface of SURFACES) {
+      const { use, result } = await mountBoth($, surface, 'text(1)', 'ok', 8, false)
+      expect((await use.find({ key: 'title' }))?.text).toBe('cod…')
+      await use.unmount()
+      await result.unmount()
+    }
+  })
+
+  const wideCases: [string, string, string][] = [
+    ['ASCII at the limit stays', 'x'.repeat(10), 'x'.repeat(10)],
+    ['ASCII one over is cut', 'x'.repeat(11), `${'x'.repeat(9)}…`],
+    ['CJK is cut by columns', '漢'.repeat(8), `${'漢'.repeat(4)}…`],
+    ['CJK of exactly the width stays', '漢'.repeat(5), '漢'.repeat(5)],
+    ['an emoji straddling the limit is cut before it', `${'a'.repeat(8)}😀😀`, `${'a'.repeat(8)}…`],
+    ['a combining mark adds no column', 'é'.repeat(10), 'é'.repeat(10)],
+    ['a combining mark does not hide an overflow', 'é'.repeat(11), `${'é'.repeat(9)}…`],
+    ['an empty line stays', '', ''],
+  ]
+
+  for (const [name, line, expected] of wideCases) {
+    test(`Proves C2: the script box and the result box cut by columns, ${name}`, async ($, on) => {
+      host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+      for (const surface of SURFACES) {
+        const { use, result } = await mountBoth($, surface, line, line, 14, false)
+        expect((await use.find({ type: 'Code' }))?.props.source).toBe(expected)
+        expect((await result.find({ key: 'output' }))?.text).toBe(expected)
+        expect((await result.find({ key: 'output' }))?.text).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+        await use.unmount()
+        await result.unmount()
+      }
+    })
+  }
+
+  test('Proves C2: the error variant cuts by columns after its mark', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+    for (const surface of SURFACES) {
+      const { use, result } = await mountBoth($, surface, 'x', '漢'.repeat(8), 14, true)
+      expect((await result.find({ key: 'error' }))?.text).toBe('✗ 漢漢漢…')
+      await use.unmount()
+      await result.unmount()
+    }
+  })
+
+  test('Proves C1: without a viewport the boxes stay content-sized', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]], 60)])
+    for (const surface of SURFACES) {
+      const { use, result } = await mountBoth($, surface, 'x'.repeat(60), 'ok', undefined, false)
+      expect((await use.find({ key: 'codemode-row' }))?.props.width).toBe(60 + FRAME)
+      expect((await result.find({ key: 'codemode-result' }))?.props.width).toBe(60 + FRAME)
+      await use.unmount()
+      await result.unmount()
+    }
   })
 })

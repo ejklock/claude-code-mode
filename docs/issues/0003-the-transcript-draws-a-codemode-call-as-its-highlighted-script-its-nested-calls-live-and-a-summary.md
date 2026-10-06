@@ -29,6 +29,7 @@ Out: new tools ([issue 0002](/issues/0002-a-codemode-script-calls-write-edit-glo
 - The layout is the full one: the script, the live call list, then the output with its summary. The options not taken are a compact view (calls and output, with the script on expand) and the script alone. The owner said to proceed with the recommendations, 2026-10-06.
 - This issue comes before issue 0002, so its demos are drawn this way. Same source.
 - After the first live run, the owner asked for a bordered container (2026-10-06). The `ToolUse` row becomes a `round`-bordered box holding a title line (`codemode · script`), the script, a divider and the call list. The `ToolResult` row becomes a matching box titled with the summary, its border green on success and red on error. Long paths are shortened with `…/`. Boxes have no border title in this build, so the title is the first line inside the box.
+- On a measured viewport the box is exactly the viewport's columns wide down to 8 columns, and the title is cut with `…` when it does not fit, which replaces "keeps the title's width" for the narrow case. A line is cut by terminal columns (CJK and emoji count two, combining marks none), so a wide character never pushes a line past the border. The owner, 2026-10-06.
 
 ### Acceptance
 
@@ -68,6 +69,33 @@ The polish was settled with the owner across three review rounds:
 - The call rows are aligned columns, and a denied or failed row reads only `denied` or `failed`.
 - A line wider than the box is cut with `…`.
 - The two boxes share one width, which the bridge records as `scriptWidth` on the run, because `ToolResult` props carry no input.
+
+On 2026-10-06 the width rule changed after the owner asked for the width of Claude Code's own boxes: when the surface's `viewport.columns` is known, both boxes are `columns` wide (content `columns - 4`), with no 100-column cap and no margin, because the engine's own rules reach the same last column; without a viewport the boxes stay content-sized and capped at 100. Two live captures from `claude --plugin-dir .` in a pane, the pane resized between them (the second shows the script box and the top of the result box; the result box ends at the same column in the full frame):
+
+```
+93 columns
+╭───────────────────────────────────────────────────────────────────────────────────────────╮
+│ codemode · script                                                                         │
+│ const c = await tools.Read({ file_path: "/private/tmp/claude-501/demo2c.2662Oy/work/ada.… │
+│ console.log(c.length);                                                                    │
+│ ───────────────────────────────────────────────────────────────────────────────────────── │
+│ ✓ Read …/work/ada.md  10 ms                                                               │
+╰───────────────────────────────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ 1 call · 120 ms                                                                         │
+```
+
+```
+139 columns
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ codemode · script                                                                                                                       │
+│ const c = await tools.Read({ file_path: "/private/tmp/claude-501/demo2c.2662Oy/work/ada.md" });                                         │
+│ console.log(c.length);                                                                                                                  │
+│ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ✓ Read …/work/ada.md  10 ms                                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+```
 
 ### Plan
 

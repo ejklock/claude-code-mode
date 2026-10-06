@@ -55,6 +55,11 @@ Out:
   - so a codemode script buys no per-call latency saving — the mechanics are already near-free — and its saving, if any, is in turns and tokens: ten reads in one codemode call pay one ~98 ms fixed cost and one model turn, against ten direct tool calls' ten turns. Whether that trade wins is what the task-savings A/B below measures; the overhead alone cannot say it.
 - The A/B prints one table per task with both sides' tokens, turns, cost, time and correct-answer count, and the README quotes it with the date, build and model.
 - A script that discards wrong answers is proven by a test with a stand-in result.
+- **Built and smoked 2026-10-06** (`scripts/savings.ts`; 14 tests over stand-in result streams in `test/node/savings.spec.ts`; npm test 93, typecheck 0, plugin kit 103, se-gates pass):
+  - the A/B runs each task's prompt on both sides against the same fixture repository and the same permission rules, the with side alone loading the plugin; the prompt never names codemode, so the with side measures the model's own choice of it;
+  - `claude -p --output-format json` was verified on build 2.1.292: the output is one JSON event array ending in the result record (`usage`, `num_turns`, `total_cost_usd`, `duration_ms`, `result`) with the assistant events' tool names in the array, so the decided tool format stands and codemode use is still detected per run;
+  - a smoke run (`--runs 1 --task todos`) proved the runner end to end: both sides correct, the with side used codemode, and the single pair already shows the direction the issue demands be published as measured — with codemode, 8 turns against 7 and 1,284 output tokens against 1,002, ~$0.099 against ~$0.086; one run says nothing, which is what the full run is for;
+  - the answer checkers are substring-and-disk based, because the harness appends connector notices to the result text.
 
 ### Plan
 

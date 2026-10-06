@@ -1,0 +1,6 @@
+{
+  "name": "codemode",
+  "description": "The codemode plugin: one tool that runs a model-written script over the session's tools.",
+  "owner": { "name": "Evaldo Klock" },
+  "plugins": [{ "name": "codemode", "source": "./" }]
+}

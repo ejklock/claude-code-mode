@@ -6,6 +6,10 @@
 
 > **Status: pilot (v0.1.0).** It exposes only `Read` and `Bash` for now. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the real token and turn savings are not measured yet.
 
+![Claude Code picks the codemode tool on its own: one script lists the TypeScript files with git, reads all five in parallel, filters the TODO lines, and only the filtered output returns](docs/media/codemode-demo.gif)
+
+*The prompt never mentions codemode. Claude writes one script that runs `git ls-files`, reads five files in parallel with `Promise.allSettled`, and keeps only the TODO lines. The nested calls are listed live as they run, and only the script's output returns to the model.*
+
 ## Why code mode
 
 Calling tools one at a time costs a model turn per call, and every result, however large, lands in the context. In code mode the model writes a short program instead:
@@ -77,7 +81,13 @@ claude --plugin-dir .
 
 ## Use
 
-Ask Claude to use the codemode tool, or just give it a task with many steps. In a script:
+Give Claude a task with many steps. Like Pi, the plugin keeps the tool declared up front, describes the script API to the model, and adds one line to the system prompt. With that, Claude picks codemode on its own when batching, chaining or filtering helps: in a measured run of a "read every file and report its TODOs" task, it chose codemode in 5 of 5 runs, against 0 of 5 without these hints ([issue 0004](docs/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md)). For a single command, such as one `git grep`, it still calls `Bash` directly.
+
+The transcript draws each call as two boxes. The first holds the highlighted script and its nested calls, each with its state and duration. The second holds a summary and the output:
+
+![The codemode tool in the Claude Code transcript: the highlighted script, six nested calls with durations, then a green summary box with the filtered output](docs/media/codemode-screenshot.png)
+
+In a script:
 
 | API | What it does |
 |---|---|
@@ -85,7 +95,7 @@ Ask Claude to use the codemode tool, or just give it a task with many steps. In 
 | `await tools.Bash({ command, timeout? })` | Resolves to the command's output. |
 | `text(value)` / `console.log(value)` | Adds to the output that returns to the model. |
 
-The script is the body of an async function, so top-level `await` and `return` work. Scripts time out after 120 seconds.
+The script is the body of an async function, so top-level `await` works. `return` and `exit()` end the script; only what it prints with `text()` or `console.log()` comes back. Scripts time out after 120 seconds.
 
 ## Develop
 

@@ -1,0 +1,22 @@
+{
+  "name": "claude-code-mode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "A Claude Code mod that offers one codemode tool, hosting pi-codemode in a Node child process.",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.hooks.json && tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/node/child.spec.ts test/node/invariants.spec.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-codemode": "1.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "typescript": "7.0.2"
+  }
+}

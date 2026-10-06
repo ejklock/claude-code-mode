@@ -1,0 +1,159 @@
+import { CodemodeSandbox } from '@earendil-works/pi-codemode'
+import type { CodemodeResult, CodemodeTool } from '@earendil-works/pi-codemode'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { Server } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { ANSWER_PATH, parseCallAnswer, parseRunRequest } from '../shared/protocol.ts'
+import type { CallAnswer, ChildMessage, ExposedTool } from '../shared/protocol.ts'
+
+const TOOL_DECLARATIONS: Record<ExposedTool, Omit<CodemodeTool, 'name' | 'execute'>> = {
+  Read: {
+    description: 'Reads a file; resolves to its text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Absolute path of the file.' },
+        offset: { type: 'number', description: 'First line to read, from 1.' },
+        limit: { type: 'number', description: 'Number of lines to read.' },
+      },
+      required: ['file_path'],
+    },
+    outputSchema: { type: 'string' },
+  },
+  Bash: {
+    description: 'Runs a shell command; resolves to its output.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        timeout: { type: 'number', description: 'Milliseconds.' },
+      },
+      required: ['command'],
+    },
+    outputSchema: { type: 'string' },
+  },
+}
+
+function send(message: ChildMessage): Promise<void> {
+  return new Promise(resolve => process.stdout.write(`${JSON.stringify(message)}\n`, () => resolve()))
+}
+
+/** Calls the script makes, waiting for the mod's answer to each over the socket. */
+class AnswerBoard {
+  private readonly waiting = new Map<number, (answer: CallAnswer) => void>()
+  private nextId = 1
+
+  async ask(tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string> {
+    const id = this.nextId++
+    const answered = new Promise<CallAnswer>((resolve, reject) => {
+      this.waiting.set(id, resolve)
+      signal.addEventListener('abort', () => reject(new Error('the script ended')), { once: true })
+    })
+    await send({ type: 'call', id, tool, input })
+    const answer = await answered.finally(() => this.waiting.delete(id))
+    if (!answer.ok) throw new Error(answer.error)
+    return answer.text
+  }
+
+  /** Returns whether `answer` matched a waiting call. */
+  deliver(answer: CallAnswer): boolean {
+    const resolve = this.waiting.get(answer.id)
+    resolve?.(answer)
+    return resolve !== undefined
+  }
+}
+
+class AnswerSocket {
+  private readonly directory = mkdtempSync(join(tmpdir(), 'codemode-'))
+  readonly path = join(this.directory, 'bridge.sock')
+  private readonly server: Server
+
+  constructor(board: AnswerBoard) {
+    this.server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      req.on('end', () => {
+        const answer = parseCallAnswer(Buffer.concat(chunks).toString('utf8'))
+        const isAccepted = req.method === 'POST' && req.url === ANSWER_PATH && answer !== undefined
+        res.statusCode = isAccepted && board.deliver(answer) ? 204 : 400
+        res.end()
+      })
+    })
+  }
+
+  listen(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.server.once('error', reject)
+      this.server.listen(this.path, resolve)
+    })
+  }
+
+  close(): Promise<void> {
+    return new Promise<void>(resolve => {
+      this.server.close(() => resolve())
+      this.server.closeAllConnections()
+    }).finally(() => rmSync(this.directory, { recursive: true, force: true }))
+  }
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function outputText(result: CodemodeResult): string {
+  return result.output.flatMap(item => (item.type === 'text' ? [item.text] : [])).join('\n')
+}
+
+class CodemodeChild {
+  async run(): Promise<void> {
+    const request = parseRunRequest(await readStdin())
+    if (request === undefined) {
+      await send({ type: 'done', ok: false, error: 'the run request on standard input is malformed', output: '' })
+      return
+    }
+    const board = new AnswerBoard()
+    const socket = new AnswerSocket(board)
+    const sandbox = new CodemodeSandbox({ tools: this.tools(board), timeoutMs: request.timeoutMs })
+    try {
+      await socket.listen()
+      await send({ type: 'listening', socketPath: socket.path })
+      const result = await sandbox.execute(request.code)
+      await socket.close()
+      await send(this.closing(result))
+    } catch (error) {
+      await socket.close()
+      const message = error instanceof Error ? error.message : String(error)
+      await send({ type: 'done', ok: false, error: message, output: '' })
+    } finally {
+      await sandbox.close()
+    }
+  }
+
+  private tools(board: AnswerBoard): CodemodeTool[] {
+    return (Object.keys(TOOL_DECLARATIONS) as ExposedTool[]).map(name => ({
+      name,
+      ...TOOL_DECLARATIONS[name],
+      execute: (args, { signal }) => board.ask(name, this.asInput(args), signal),
+    }))
+  }
+
+  private asInput(args: unknown): Record<string, unknown> {
+    const isObject = typeof args === 'object' && args !== null && !Array.isArray(args)
+    return isObject ? (args as Record<string, unknown>) : {}
+  }
+
+  private closing(result: CodemodeResult): ChildMessage {
+    const output = outputText(result)
+    return result.ok
+      ? { type: 'done', ok: true, output }
+      : { type: 'done', ok: false, error: result.error.message, output }
+  }
+}
+
+await new CodemodeChild().run()
+process.exit(0)

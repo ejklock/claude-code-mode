@@ -6,36 +6,8 @@ import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ANSWER_PATH, parseCallAnswer, parseRunRequest } from '../shared/protocol.ts'
+import { ANSWER_PATH, EXPOSED_TOOLS, declarationOf, parseCallAnswer, parseRunRequest } from '../shared/protocol.ts'
 import type { CallAnswer, ChildMessage, ExposedTool } from '../shared/protocol.ts'
-
-const TOOL_DECLARATIONS: Record<ExposedTool, Omit<CodemodeTool, 'name' | 'execute'>> = {
-  Read: {
-    description: 'Reads a file; resolves to its text.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        file_path: { type: 'string', description: 'Absolute path of the file.' },
-        offset: { type: 'number', description: 'First line to read, from 1.' },
-        limit: { type: 'number', description: 'Number of lines to read.' },
-      },
-      required: ['file_path'],
-    },
-    outputSchema: { type: 'string' },
-  },
-  Bash: {
-    description: 'Runs a shell command; resolves to its output.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        command: { type: 'string' },
-        timeout: { type: 'number', description: 'Milliseconds.' },
-      },
-      required: ['command'],
-    },
-    outputSchema: { type: 'string' },
-  },
-}
 
 function send(message: ChildMessage): Promise<void> {
   return new Promise(resolve => process.stdout.write(`${JSON.stringify(message)}\n`, () => resolve()))
@@ -135,9 +107,9 @@ class CodemodeChild {
   }
 
   private tools(board: AnswerBoard): CodemodeTool[] {
-    return (Object.keys(TOOL_DECLARATIONS) as ExposedTool[]).map(name => ({
+    return EXPOSED_TOOLS.map(name => ({
       name,
-      ...TOOL_DECLARATIONS[name],
+      ...declarationOf(name),
       execute: (args, { signal }) => board.ask(name, this.asInput(args), signal),
     }))
   }

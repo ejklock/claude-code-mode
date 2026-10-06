@@ -2,7 +2,9 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { ANSWER_PATH } from '../shared/protocol.ts'
+import { EXPOSED_DOCS, GUIDELINE, describeCodemode, toolDocs } from '../hooks/describe.ts'
+import type { ToolDoc } from '../hooks/describe.ts'
+import { ANSWER_PATH, EXPOSED_TOOLS } from '../shared/protocol.ts'
 
 const CODEMODE = 'mcp__codemode__codemode'
 const SOCKET = '/tmp/stand-in/bridge.sock'
@@ -373,5 +375,106 @@ describe('a progress state that cannot be published', () => {
     const failing = await callCodemode($)
     expect(working.result).toBe('FIXTURE-CONTENT\ncodemode-ok')
     expect(failing).toEqual(working)
+  })
+})
+
+const ENGINE_ORIGIN = { plugin: 'engine', tier: 'core' } as const
+const GUIDELINE_ID = 'codemode:guideline'
+
+const engineSection = (id: string, scope: 'shared' | 'session') => ({ id, text: `text of ${id}`, scope })
+
+function standInPrompt(on: On, sections: ReturnType<typeof engineSection>[]): void {
+  on('prompt.compose', () => ({ sections }))
+}
+
+const composeFor = ($: Engine, tools: string[]) =>
+  $.prompt.compose({
+    model: 'a-model',
+    promptModel: 'a-model',
+    surfaces: [],
+    tools,
+    outputStyle: null,
+    traits: [],
+  })
+
+describe('the codemode description', () => {
+  test('Proves C1: the tool is declared up front with the intro, the globals and one section per tool', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
+    const answer = await $.tool.describe({ tool: CODEMODE, description: 'registered', provider: ENGINE_ORIGIN })
+
+    expect(answer.isDeferred).toBe(false)
+    expect(answer.description).toContain('Runs JavaScript that calls other tools')
+    expect(answer.description).toContain('Globals:')
+    expect(answer.description).toContain('`text(value)`')
+    expect(answer.description).toContain('`exit()`')
+    expect(answer.description).toContain('`ALL_TOOLS`')
+    expect(answer.description).toContain('`tools.Read(args)` takes `file_path`')
+    expect(answer.description).toContain('`offset`')
+    expect(answer.description).toContain('`limit`')
+    expect(answer.description).toContain('`tools.Bash(args)` takes `command`')
+    expect(answer.description).toContain('`timeout`')
+  })
+
+  test('Proves C1: another tool keeps its description and its placement', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
+    const answer = await $.tool.describe({ tool: 'Bash', description: 'the engine text', provider: ENGINE_ORIGIN })
+    expect(answer).toEqual({ description: 'the engine text', isDeferred: true })
+  })
+
+  test('Proves C1: the builder gives one section per exposed tool, in list order', () => {
+    const extra = { name: 'Grep', summary: 'Searches.', args: '`pattern`', resolves: 'the matches' }
+    const sections = (docs: readonly ToolDoc[]) =>
+      [...describeCodemode(docs).matchAll(/^### `(\w+)`$/gm)].map(match => match[1])
+
+    expect(sections(EXPOSED_DOCS)).toEqual([...EXPOSED_TOOLS])
+    expect(sections([...EXPOSED_DOCS, extra])).toEqual([...EXPOSED_TOOLS, 'Grep'])
+    expect(describeCodemode([...EXPOSED_DOCS, extra])).toContain('`tools.Grep(args)` takes `pattern`')
+  })
+})
+
+describe('the codemode description source', () => {
+  test('Proves C2: a stand-in source with an extra argument shows up in the description', () => {
+    const specs = {
+      Grep: {
+        sandboxDescription: 'Searches.',
+        summary: 'Searches.',
+        resolves: 'the matches',
+        args: {
+          pattern: { type: 'string', isRequired: true },
+          glob: { type: 'string', isRequired: false, note: 'file filter' },
+        },
+      },
+    } as const
+    const description = describeCodemode(toolDocs(specs, ['Grep']))
+    expect(description).toContain('`tools.Grep(args)` takes `pattern`, optional `glob` (file filter), and resolves to the matches.')
+  })
+})
+
+describe('the codemode guideline', () => {
+  test('Proves C2: it follows engine sections that are all shared', async ($, on) => {
+    const engine = [engineSection('intro', 'shared'), engineSection('tools', 'shared')]
+    standInPrompt(on, engine)
+    const { sections } = await composeFor($, [CODEMODE])
+    expect(sections.slice(0, 2)).toEqual(engine)
+    expect(sections).toHaveLength(3)
+    expect(sections[2]).toEqual({ id: GUIDELINE_ID, text: GUIDELINE, scope: 'session' })
+    expect(GUIDELINE).toBe(
+      'Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.',
+    )
+  })
+
+  test('Proves C2: it follows engine sections that already end in session ones', async ($, on) => {
+    const engine = [engineSection('intro', 'shared'), engineSection('env', 'session'), engineSection('memory', 'session')]
+    standInPrompt(on, engine)
+    const { sections } = await composeFor($, [CODEMODE])
+    expect(sections.map(section => section.id)).toEqual(['intro', 'env', 'memory', GUIDELINE_ID])
+    expect(sections.slice(0, 3)).toEqual(engine)
+  })
+
+  test('Proves C2: nothing is appended when the request lacks the codemode tool', async ($, on) => {
+    const engine = [engineSection('intro', 'shared'), engineSection('env', 'session')]
+    standInPrompt(on, engine)
+    const { sections } = await composeFor($, ['Read', 'Bash'])
+    expect(sections).toEqual(engine)
   })
 })

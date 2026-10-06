@@ -5,6 +5,30 @@ import { dirname, join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { describeCodemode, toolDocs } from '../../hooks/describe.ts'
+import { classifyRun } from '../../scripts/adoption.ts'
+import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
+import type { ToolSpec } from '../../shared/protocol.ts'
+
+const DESCRIPTION_SNAPSHOT = [
+  'Runs JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a sandbox: top-level `await` works. No Node, file system, network, or timers.',
+  '- `await tools.<name>({ ...args })` resolves to the tool\'s text and rejects with an Error when the call fails or a permission rule refuses it; catch it to continue.',
+  '- Only what the script prints comes back, so filter and combine results in the script.',
+  '',
+  'Globals:',
+  '- `text(value)` and `console.log(...)` add output; non-strings are JSON-stringified. A top-level `return` ends the script, and its value is not sent back.',
+  '- `exit()` ends the script successfully, keeping its output.',
+  '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
+  '',
+  'Nested tools:',
+  '',
+  '### `Read`',
+  'Reads a file. `tools.Read(args)` takes `file_path` (absolute path), optional `offset` (first line, from 1) and `limit` (number of lines), and resolves to the file text.',
+  '',
+  '### `Bash`',
+  'Runs a shell command. `tools.Bash(args)` takes `command`, optional `timeout` (milliseconds), and resolves to the command output.',
+].join('\n')
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const SOURCE_DIRECTORIES = ['hooks', 'child', 'shared']
 const PINNED_PACKAGE = '@earendil-works/pi-codemode'
@@ -125,5 +149,98 @@ describe('the pi-codemode pin is exact', () => {
 
   it('Proves C5: a missing dependency fails', () => {
     assert.match(pinProblem('{}') ?? '', /not declared/)
+  })
+})
+
+describe('an adoption run is valid only when claude finished', () => {
+  const line = (event: Record<string, unknown>): string => `${JSON.stringify(event)}\n`
+  const calling = (...names: string[]): string =>
+    line({ type: 'assistant', message: { content: names.map(name => ({ type: 'tool_use', name })) } })
+  const finished = line({ type: 'result' })
+
+  it('Proves C1: a run that used codemode is valid and counts', () => {
+    const outcome = classifyRun({ status: 0, stdout: calling('mcp__codemode__codemode') + finished })
+    assert.deepEqual(outcome, { ok: true, tools: ['mcp__codemode__codemode'], usedCodemode: true })
+  })
+
+  it('Proves C1: a run that used Bash only is valid and does not count', () => {
+    const outcome = classifyRun({ status: 0, stdout: calling('Bash', 'Bash') + finished })
+    assert.deepEqual(outcome, { ok: true, tools: ['Bash', 'Bash'], usedCodemode: false })
+  })
+
+  it('Proves C1: a spawn error fails the run', () => {
+    const outcome = classifyRun({ error: new Error('spawnSync claude ENOENT'), status: null, stdout: '' })
+    assert.deepEqual(outcome, { ok: false, reason: 'spawn failed: spawnSync claude ENOENT' })
+  })
+
+  it('Proves C1: a non-zero status fails the run', () => {
+    const outcome = classifyRun({ status: 1, stdout: calling('Bash') + finished })
+    assert.deepEqual(outcome, { ok: false, reason: 'exit status 1' })
+  })
+
+  it('Proves C1: a zero status with no result event fails the run', () => {
+    const outcome = classifyRun({ status: 0, stdout: calling('Bash') })
+    assert.deepEqual(outcome, { ok: false, reason: 'the stream has no result event' })
+  })
+})
+
+describe('the sandbox declarations read as they always did', () => {
+  it('Proves C1: Read is declared with its original text', () => {
+    assert.deepEqual(declarationOf('Read'), {
+      description: 'Reads a file; resolves to its text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Absolute path of the file.' },
+          offset: { type: 'number', description: 'First line to read, from 1.' },
+          limit: { type: 'number', description: 'Number of lines to read.' },
+        },
+        required: ['file_path'],
+      },
+      outputSchema: { type: 'string' },
+    })
+  })
+
+  it('Proves C1: Bash is declared with its original text', () => {
+    assert.deepEqual(declarationOf('Bash'), {
+      description: 'Runs a shell command; resolves to its output.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          timeout: { type: 'number', description: 'Milliseconds.' },
+        },
+        required: ['command'],
+      },
+      outputSchema: { type: 'string' },
+    })
+  })
+})
+
+describe('the model-facing description keeps its text', () => {
+  it('Proves C2: it is byte-identical to the snapshot', () => {
+    assert.equal(describeCodemode(), DESCRIPTION_SNAPSHOT)
+  })
+})
+
+describe('the described tool arguments come from the declared ones', () => {
+  const described = (args: string): string[] => [...args.matchAll(/`(\w+)`/g)].map(match => match[1] ?? '')
+
+  for (const name of EXPOSED_TOOLS) {
+    it(`Proves C2: ${name} is described with exactly the properties it declares`, () => {
+      const spec = TOOL_SPECS[name]
+      const declared = Object.keys((inputSchemaOf(spec).properties ?? {}) as Record<string, unknown>)
+      const doc = toolDocs().find(candidate => candidate.name === name)
+      assert.deepEqual(described(doc?.args ?? ''), declared)
+    })
+  }
+
+  it('Proves C2: an argument added to a source shows up in the description and the schema', () => {
+    const specs = {
+      Read: { ...TOOL_SPECS.Read, args: { ...TOOL_SPECS.Read.args, encoding: { type: 'string', isRequired: false } } },
+    } satisfies Record<string, ToolSpec>
+    const [doc] = toolDocs(specs, ['Read'])
+    assert.match(doc?.args ?? '', /`encoding`/)
+    assert.ok('encoding' in ((inputSchemaOf(specs.Read).properties ?? {}) as object))
   })
 })

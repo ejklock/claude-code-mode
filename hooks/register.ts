@@ -2,6 +2,7 @@ import { atom, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
+import { GUIDELINE, describeCodemode } from './describe.ts'
 import { registerRender } from './render.tsx'
 
 // The state scan reads the reference from this file, so render.tsx spells its
@@ -11,13 +12,7 @@ const RUNS = atom({ plugin: 'codemode', key: 'runs' } as const, [])
 const TOOL_NAME = 'codemode'
 const SCRIPT_TIMEOUT_MS = 120_000
 
-const DESCRIPTION = [
-  'Runs a JavaScript script that calls the session\'s tools, and returns only what the script prints.',
-  'The script is the body of an async function: `await` and `return` work at the top level.',
-  'Call tools as `await tools.Read({ file_path })` and `await tools.Bash({ command })`; each resolves to the tool\'s text.',
-  'No other tool is available. A refused or failed call throws an Error inside the script; catch it to continue.',
-  'Print with `text(value)` or `console.log(value)`: only that output comes back, so filter and combine results in the script.',
-].join('\n')
+const TOOL_ID = `mcp__codemode__${TOOL_NAME}`
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -30,11 +25,21 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await $.tool.register({ name: TOOL_NAME, description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
+    await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: INPUT_SCHEMA })
     return started
   })
 
-  on('tool.call', { tool: `mcp__codemode__${TOOL_NAME}` }, async ($, e) => {
+  on('tool.describe', { tool: TOOL_ID }, () => ({ description: describeCodemode(), isDeferred: false })).catch(
+    (_$, e, next) => next(e),
+  )
+
+  on('prompt.compose', async (_$, e, next) => {
+    const { sections } = await next(e)
+    if (!e.tools.includes(TOOL_ID)) return { sections }
+    return { sections: [...sections, { id: 'codemode:guideline', text: GUIDELINE, scope: 'session' as const }] }
+  }).catch((_$, e, next) => next(e))
+
+  on('tool.call', { tool: TOOL_ID }, async ($, e) => {
     if (typeof e.code !== 'string') return { deny: 'codemode needs a `code` string.' }
     const bridge = new CodemodeBridge(
       {

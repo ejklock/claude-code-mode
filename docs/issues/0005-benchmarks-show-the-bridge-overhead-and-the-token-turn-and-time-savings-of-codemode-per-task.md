@@ -2,7 +2,7 @@
 type: Issue
 title: Benchmarks show the bridge overhead and the token, turn and time savings of codemode per task
 description: Measures the bridge's fixed and per-call overhead locally, then A/B runs of the same tasks with and without codemode, reporting tokens, turns, cost, time and correctness.
-status: open
+status: closed
 timestamp: 2026-10-06T19:02:56Z
 ---
 
@@ -24,7 +24,7 @@ Out:
 ### Decision
 
 - **Correctness gates the numbers.** A run whose answer is wrong or missing is reported apart, not averaged in: fewer tokens from less work is not a saving.
-- **Medians and ranges over five or more runs per side and task**, after one discarded warm-up run per side for the prompt cache. With so few runs only large differences are claimed.
+- **Medians and ranges over five or more runs per side and task**, after one discarded warm-up run per side for the prompt cache. With so few runs only large differences are claimed. **Amended 2026-10-06 (owner):** the first full run uses **3 runs per side** — a run costs ~US$0.16 on claude-opus-5-5 and the five-hour rate window stood at 0.85, and 48 runs could have hit the ceiling — so the run stays inside the window; only large differences are claimed, and a later run can raise the count once the window resets.
 - **Results are published as measured.** Where codemode costs more, the README says so.
 
 ### Acceptance
@@ -60,6 +60,40 @@ Out:
   - `claude -p --output-format json` was verified on build 2.1.292: the output is one JSON event array ending in the result record (`usage`, `num_turns`, `total_cost_usd`, `duration_ms`, `result`) with the assistant events' tool names in the array, so the decided tool format stands and codemode use is still detected per run;
   - a smoke run (`--runs 1 --task todos`) proved the runner end to end: both sides correct, the with side used codemode, and the single pair already shows the direction the issue demands be published as measured — with codemode, 8 turns against 7 and 1,284 output tokens against 1,002, ~$0.099 against ~$0.086; one run says nothing, which is what the full run is for;
   - the answer checkers are substring-and-disk based, because the harness appends connector notices to the result text.
+- **Ran 2026-10-06** (`node scripts/savings.ts --runs 3`, the amended 3 runs per side; 24 runs, every answer correct, none failed; claude 2.1.292, claude-opus-5-5, one discarded warm-up per side and task; the prompt never names codemode):
+
+  ```
+  task todos (read 5 tracked files, report their TODOs)
+  side         runs correct  wrong codemode             input output cacheW cacheR      turns  cost$   time
+  with            3       3      0        3           4 (4-8)    574    530  38188    2 (2-4)  0.023   7.7s
+  without         3       3      0        -           6 (6-6)    966   1027  54286    7 (7-7)  0.039  11.9s
+
+  task last-commit (git log, then read each changed file)
+  side         runs correct  wrong codemode             input output cacheW cacheR      turns  cost$   time
+  with            3       3      0        3           4 (4-4)    443    497  38222    2 (2-2)  0.021   6.3s
+  without         3       3      0        -           6 (6-6)    414    558  55041    4 (4-4)  0.024   7.1s
+
+  task write-three (create notes.md, team.md, usage.md)
+  side         runs correct  wrong codemode             input output cacheW cacheR      turns  cost$   time
+  with            3       3      0        3        12 (10-12)   1229   1674 111935    6 (5-6)  0.062  15.0s
+  without         3       3      0        -        10 (10-10)   1321   1710  93581    8 (8-8)  0.059  15.8s
+
+  task grep-port (one git grep for the port line)
+  side         runs correct  wrong codemode             input output cacheW cacheR      turns  cost$   time
+  with            3       3      0        0           4 (4-4)    164      0  38329    2 (2-2)  0.011   5.3s
+  without         3       3      0        -           4 (4-4)    259   2105  32780    2 (2-2)  0.029   6.3s
+  ```
+
+  - the codemode tool's declaration adds ~430 tokens (description 1,048 chars + code parameter 670 chars, at 4 chars a token) to every turn on the with side; those tokens are inside the with-side numbers above.
+
+  Reading of the numbers:
+
+  - where many reads batch into one script (`todos`), codemode cut the turns to less than a third (2 against 7), the output tokens to ~60% (574 against 966), the cost to ~60% ($0.023 against $0.039) and the wall time to ~65% (7.7 s against 11.9 s);
+  - the chain task (`last-commit`) halved the turns (2 against 4) at level tokens, cost and time;
+  - the write task (`write-three`) cut the turns a quarter (6 against 8) at level tokens, cost and time — the script's own confirmation outputs eat part of the saving;
+  - the unfavoured single `git grep` (`grep-port`): the model used codemode in 0 of 3 runs and called `Bash` directly, the right choice; that task's differences are run-to-run noise, not a saving or a cost of the tool;
+  - input tokens are near zero on both sides because the context rides the prompt cache, so the token story lives in the output and cache columns;
+  - with 3 runs per side, only the large differences are claimed; the rest is noise. The README quotes the table and the caveats.
 
 ### Plan
 

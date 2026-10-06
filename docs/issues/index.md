@@ -6,4 +6,7 @@
 * [0002 — A codemode script calls Write, Edit, Glob, Grep and the session's MCP tools through the bridge](0002-a-codemode-script-calls-write-edit-glob-grep-and-the-session-s-mcp-tools-through-the-bridge.md) - open
 * [0003 — The transcript draws a codemode call as its highlighted script, its nested calls live, and a summary](0003-the-transcript-draws-a-codemode-call-as-its-highlighted-script-its-nested-calls-live-and-a-summary.md) - open
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
-* [0005 — Benchmarks show the bridge overhead and the token, turn and time savings of codemode per task](0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md) - open
+
+## Closed
+
+* [0005 — Benchmarks show the bridge overhead and the token, turn and time savings of codemode per task](0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md) - closed

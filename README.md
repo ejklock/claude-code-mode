@@ -4,7 +4,7 @@
 
 **Inspired by [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)**, by Earendil. Earendil's post [**"You Said No MCP!"**](https://earendil.com/posts/you-said-no-mcp/) explains the idea and why it works, and Armin Ronacher's [**"What is Codemode"**](https://lucumr.pocoo.org/2026/10/6/codemode/) describes it from the harness side. This project does not reimplement it. **It is a bridge:** it runs Pi's own script runtime, [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) (QuickJS in WebAssembly), and connects each `tools.*` call the script makes to Claude Code's own tool call. Your permission rules, prompts and hooks still apply to every one of them, and a script written for Pi's codemode reads the same here.
 
-> **Status: pilot (v0.1.0).** It exposes `Read`, `Bash`, `Write` and `Edit`, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the real token and turn savings are not measured yet.
+> **Status: pilot (v0.1.0).** It exposes `Read`, `Bash`, `Write` and `Edit`, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the task-level savings are measured — see [Benchmarks](#benchmarks) and [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md).
 
 ![Claude Code picks the codemode tool on its own: one script lists the TypeScript files with git, reads all five in parallel, filters the TODO lines, and only the filtered output returns](docs/media/codemode-demo.gif)
 
@@ -24,7 +24,20 @@
 
 **Where it does not:** a single command, such as one `git grep`. Claude still calls `Bash` directly, which is the right choice.
 
-The token and turn savings are not measured yet; see the Roadmap. What is measured is that the model picks the tool on its own for tasks like these (see Use).
+### Benchmarks
+
+Measured with no model in the loop ([`node scripts/overhead.ts`](scripts/overhead.ts), 15 runs per size): the bridge costs **~98 ms to open** (child start, sandbox, socket, close) and **~0.1–0.3 ms per nested call** — 100 sequential calls add ~3 ms, within run-to-run noise. The bridge is expensive to open and nearly free to use.
+
+The same tasks, with and without the plugin ([`node scripts/savings.ts`](scripts/savings.ts), 2026-10-06, Claude Code 2.1.292, claude-opus-5-5, 3 runs per side after one discarded warm-up, medians over all-correct runs, the prompt never naming codemode):
+
+| Task | Turns with / without | Output tokens with / without | Cost with / without |
+|---|---|---|---|
+| read 5 tracked files, report their TODOs | 2 / 7 | 574 / 966 | $0.023 / $0.039 |
+| `git log` → read each changed file | 2 / 4 | 443 / 414 | $0.021 / $0.024 |
+| write 3 files | 6 / 8 | 1,229 / 1,321 | $0.062 / $0.059 |
+| one `git grep` | 2 / 2 | 164 / 259 | $0.011 / $0.029 |
+
+Where many reads batch into one script, codemode cut the turns to less than a third, the output tokens to ~60% and the cost to ~60%, and the wall time fell with the turns (7.7 s against 11.9 s). On the write task the turns fell a quarter but tokens and cost were level. On the single `git grep` — where codemode should not help — the model never used it (0 of 3 runs) and called `Bash` directly; that row's differences are run-to-run noise, not a saving or a cost of the tool. Input tokens are near zero on both sides because the context rides the prompt cache; the codemode tool's own schema (~430 tokens) is inside the with-side numbers. Ranges, method and the honest caveats are in [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md); with 3 runs per side, only the large differences above are claimed.
 
 **Read more:** Earendil's [Pi codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) and ["You Said No MCP!"](https://earendil.com/posts/you-said-no-mcp/); Armin Ronacher's ["What is Codemode"](https://lucumr.pocoo.org/2026/10/6/codemode/); [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/); [Anthropic's Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp).
 
@@ -135,10 +148,9 @@ Decisions and open work live in [`docs/`](docs/index.md): the [constitution](doc
 
 ## Roadmap
 
-- Measure the bridge overhead per nested call ([issue 0001](docs/issues/0001-a-prototype-runs-a-script-that-calls-read-and-bash-through-the-mod-and-measures-the-child-process-overhead.md)).
 - Every built-in tool, the Agent tool and MCP servers as typed `tools.*`.
 - `store()` / `load()`, tool search, and parity with Pi's lower-case names.
-- Measure task-level token and turn savings, with and without codemode.
+- Re-measure the task savings at five or more runs per side once the rate window allows ([issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md)).
 
 ## Credits
 

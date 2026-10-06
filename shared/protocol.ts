@@ -4,13 +4,13 @@
  */
 
 /** The tools a script may call; the child declares them and the mod refuses others. */
-export const EXPOSED_TOOLS = ['Read', 'Bash'] as const
+export const EXPOSED_TOOLS = ['Read', 'Bash', 'Write', 'Edit'] as const
 
 export type ExposedTool = (typeof EXPOSED_TOOLS)[number]
 
 /** One argument of an exposed tool: the child declares it, the description names it. */
 export type ToolArg = {
-  type: 'string' | 'number'
+  type: 'string' | 'number' | 'boolean'
   isRequired: boolean
   /** How the model-facing description words the argument. */
   note?: string
@@ -45,6 +45,26 @@ export const TOOL_SPECS: Record<ExposedTool, ToolSpec> = {
     args: {
       command: { type: 'string', isRequired: true },
       timeout: { type: 'number', isRequired: false, note: 'milliseconds', sandboxNote: 'Milliseconds.' },
+    },
+  },
+  Write: {
+    sandboxDescription: 'Writes a file, replacing it; resolves to a confirmation.',
+    summary: 'Writes a file.',
+    resolves: 'a confirmation',
+    args: {
+      file_path: { type: 'string', isRequired: true, note: 'absolute path', sandboxNote: 'Absolute path of the file.' },
+      content: { type: 'string', isRequired: true, sandboxNote: 'The content to write.' },
+    },
+  },
+  Edit: {
+    sandboxDescription: 'Replaces text in a file; resolves to a confirmation.',
+    summary: 'Replaces text in a file.',
+    resolves: 'a confirmation',
+    args: {
+      file_path: { type: 'string', isRequired: true, note: 'absolute path', sandboxNote: 'Absolute path of the file.' },
+      old_string: { type: 'string', isRequired: true, sandboxNote: 'The text to replace.' },
+      new_string: { type: 'string', isRequired: true, sandboxNote: 'The replacement text.' },
+      replace_all: { type: 'boolean', isRequired: false, note: 'every match', sandboxNote: 'Replace every match, not only the first.' },
     },
   },
 }

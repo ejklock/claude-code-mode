@@ -146,10 +146,28 @@ describe('the codemode child on a real socket', () => {
   })
 
   it('Proves C4: a tool that is not exposed never reaches the mod', async () => {
-    const outcome = await runChild(`await tools.Edit({ file_path: '/a' })`, answerByTool)
+    const outcome = await runChild(`await tools.NotebookEdit({ notebook_path: '/a' })`, answerByTool)
     assert.equal(outcome.done.ok, false)
-    assert.match(outcome.done.ok ? '' : outcome.done.error, /Edit/)
+    assert.match(outcome.done.ok ? '' : outcome.done.error, /NotebookEdit/)
     assert.deepEqual(outcome.calls, [])
+    assertCleanExit(outcome)
+  })
+
+  it('Proves C1: Write then Edit reach the answer server with their inputs and their text comes back', async () => {
+    const outcome = await runChild(
+      `text(await tools.Write({ file_path: '/a', content: 'one' }))
+       text(await tools.Edit({ file_path: '/a', old_string: 'one', new_string: 'two', replace_all: true }))`,
+      call => ({ ok: true, text: `${call.tool}-done` }),
+    )
+    assert.equal(outcome.done.ok, true)
+    assert.equal(outcome.done.output, 'Write-done\nEdit-done')
+    assert.deepEqual(
+      outcome.calls.map(call => [call.tool, call.input]),
+      [
+        ['Write', { file_path: '/a', content: 'one' }],
+        ['Edit', { file_path: '/a', old_string: 'one', new_string: 'two', replace_all: true }],
+      ],
+    )
     assertCleanExit(outcome)
   })
 

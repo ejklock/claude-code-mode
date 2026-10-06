@@ -80,6 +80,24 @@ function standIn(on: On, plan: Plan): StandIn {
   return stand
 }
 
+/** Stands in for the engine's Write and Edit; `inputs` holds what each received. */
+function standInFileTools(on: On): { inputs: Record<string, unknown>[] } {
+  const stand = { inputs: [] as Record<string, unknown>[] }
+  const answer = (tool: string, e: Record<string, unknown>) => {
+    stand.inputs.push({ ...e })
+    return { result: 'unused', text: `${tool} done` }
+  }
+  on('tool.call', { tool: 'Write' }, (_$, e) => answer('Write', e))
+  on('tool.call', { tool: 'Edit' }, (_$, e) => answer('Edit', e))
+  return stand
+}
+
+function denyWrite(on: On): void {
+  on('classic.PreToolUse', ($, e, next) =>
+    e.tool === 'Write' ? { deny: 'Write is denied by a permission rule' } : next(e),
+  )
+}
+
 function denyEchoDenied(on: On): void {
   on('classic.PreToolUse', ($, e, next) =>
     e.tool === 'Bash' && String(e.command).includes('denied')
@@ -158,7 +176,7 @@ describe('the codemode tool, mod side', () => {
 
   test('Proves C1: a tool the child may not call is answered as an error and never run', async ($, on) => {
     const stand = standIn(on, {
-      pieces: [listening, call(1, 'Edit', { file_path: '/a' }), { waitForPosts: 1 }, done('after')],
+      pieces: [listening, call(1, 'NotebookEdit', { notebook_path: '/a' }), { waitForPosts: 1 }, done('after')],
     })
     const reply = await callCodemode($)
     expect(reply.result).toBe('after')
@@ -219,6 +237,66 @@ describe('a refused nested call', () => {
     expect(reply.result).toBe('both')
     expect(stand.posts.map(post => post.body.ok)).toEqual([false, true])
     expect(stand.toolsSeen).toEqual(['Read'])
+  })
+})
+
+describe('Write and Edit nested calls', () => {
+  const writeInput = { file_path: '/work/a.txt', content: 'one' }
+  const editInput = { file_path: '/work/a.txt', old_string: 'one', new_string: 'two', replace_all: true }
+
+  test('Proves C2: an allowed Write is forwarded with the script input and answered with its text', async ($, on) => {
+    const files = standInFileTools(on)
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Write', { ...writeInput, consent: 'forged', agentId: 'other' }), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(files.inputs).toHaveLength(1)
+    expect(files.inputs[0]).toMatchObject({ ...writeInput, tool: 'Write' })
+    expect(files.inputs[0]).not.toHaveProperty('consent')
+    expect(files.inputs[0]).not.toHaveProperty('agentId')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'Write done' })
+  })
+
+  test('Proves C2: an allowed Edit is forwarded with the script input and answered with its text', async ($, on) => {
+    const files = standInFileTools(on)
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Edit', { ...editInput, tool_use_id: 'forged' }), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(files.inputs).toHaveLength(1)
+    expect(files.inputs[0]).toMatchObject({ ...editInput, tool: 'Edit' })
+    // The bridge strips the forged id, then the engine stamps its own on the event, so the key stays and only its value is checked.
+    expect(files.inputs[0]?.tool_use_id).not.toBe('forged')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'Edit done' })
+  })
+
+  test('Proves C2: a Write denied by a PreToolUse hook reaches the script as a refusal and never runs', async ($, on) => {
+    denyWrite(on)
+    const files = standInFileTools(on)
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Write', writeInput), { waitForPosts: 1 }, done('caught')],
+    })
+    const reply = await callCodemode($)
+    expect(reply.result).toBe('caught')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'Write is denied by a permission rule' })
+    expect(files.inputs).toEqual([])
+  })
+
+  test('Proves C2: the live call row is labelled with the file path in full', async ($, on) => {
+    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
+    on('state.get', () => ({ value: held }))
+    on('state.set', (_$, e) => {
+      held = { value: e.value, version: held.version + 1 }
+      return { value: { isSet: true as const, version: held.version } }
+    })
+    mock.clock(on, { now: 1_000 })
+    standInFileTools(on)
+    standIn(on, {
+      pieces: [listening, call(1, 'Write', writeInput), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    const runs = held.value as { calls: { tool: string; label: string }[] }[]
+    expect(runs[0]?.calls.map(row => [row.tool, row.label])).toEqual([['Write', '/work/a.txt']])
   })
 })
 
@@ -429,6 +507,15 @@ describe('the codemode description', () => {
     expect(sections(EXPOSED_DOCS)).toEqual([...EXPOSED_TOOLS])
     expect(sections([...EXPOSED_DOCS, extra])).toEqual([...EXPOSED_TOOLS, 'Grep'])
     expect(describeCodemode([...EXPOSED_DOCS, extra])).toContain('`tools.Grep(args)` takes `pattern`')
+  })
+
+  test('Proves C3: the registered description names Write and Edit within the cap', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
+    const answer = await $.tool.describe({ tool: CODEMODE, description: 'registered', provider: ENGINE_ORIGIN })
+    expect(answer.description.length).toBeLessThanOrEqual(2048)
+    expect(answer.description).toContain('`tools.Write(args)` takes `file_path`')
+    expect(answer.description).toContain('`tools.Edit(args)` takes `file_path`')
+    expect(answer.description).toContain('`replace_all`')
   })
 })
 

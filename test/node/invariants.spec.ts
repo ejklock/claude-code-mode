@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { describeCodemode, toolDocs } from '../../hooks/describe.ts'
+import { DESCRIPTION_CAP, describeCodemode, toolDocs } from '../../hooks/describe.ts'
+import type { ToolDoc } from '../../hooks/describe.ts'
 import { classifyRun } from '../../scripts/adoption.ts'
 import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
 import type { ToolSpec } from '../../shared/protocol.ts'
@@ -27,6 +28,12 @@ const DESCRIPTION_SNAPSHOT = [
   '',
   '### `Bash`',
   'Runs a shell command. `tools.Bash(args)` takes `command`, optional `timeout` (milliseconds), and resolves to the command output.',
+  '',
+  '### `Write`',
+  'Writes a file. `tools.Write(args)` takes `file_path` (absolute path), `content`, and resolves to a confirmation.',
+  '',
+  '### `Edit`',
+  'Replaces text in a file. `tools.Edit(args)` takes `file_path` (absolute path), `old_string`, `new_string`, optional `replace_all` (every match), and resolves to a confirmation.',
 ].join('\n')
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -214,6 +221,53 @@ describe('the sandbox declarations read as they always did', () => {
       },
       outputSchema: { type: 'string' },
     })
+  })
+})
+
+describe('the sandbox declares Write and Edit as the build types them', () => {
+  it('Proves C1: Write is declared with its two required strings', () => {
+    const { inputSchema, outputSchema } = declarationOf('Write')
+    const properties = inputSchema.properties as Record<string, { type: string }>
+    assert.deepEqual(Object.keys(properties), ['file_path', 'content'])
+    assert.deepEqual(Object.values(properties).map(property => property.type), ['string', 'string'])
+    assert.deepEqual(inputSchema.required, ['file_path', 'content'])
+    assert.deepEqual(outputSchema, { type: 'string' })
+  })
+
+  it('Proves C1: Edit is declared with replace_all as an optional boolean', () => {
+    const { inputSchema } = declarationOf('Edit')
+    const properties = inputSchema.properties as Record<string, { type: string }>
+    assert.deepEqual(Object.keys(properties), ['file_path', 'old_string', 'new_string', 'replace_all'])
+    assert.deepEqual(Object.values(properties).map(property => property.type), ['string', 'string', 'string', 'boolean'])
+    assert.deepEqual(inputSchema.required, ['file_path', 'old_string', 'new_string'])
+  })
+})
+
+describe('the description holds to the cap', () => {
+  const sectionNames = (text: string): string[] => [...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1] ?? '')
+  const small: ToolDoc = { name: 'Small', summary: 'Does a thing.', args: '`a`', resolves: 'the thing' }
+  const padded = (pad: number): ToolDoc => ({ name: 'Pad', summary: 'x'.repeat(pad), args: '`a`', resolves: 'r' })
+  const exactPad = DESCRIPTION_CAP - describeCodemode([small, padded(0)]).length
+
+  it('Proves C3: the real four tools fit, one section each', () => {
+    const text = describeCodemode()
+    assert.ok(text.length <= DESCRIPTION_CAP, `description is ${text.length} characters`)
+    assert.deepEqual(sectionNames(text), ['Read', 'Bash', 'Write', 'Edit'])
+    assert.doesNotMatch(text, /listed in `ALL_TOOLS`/)
+  })
+
+  it('Proves C3: a list exactly at the cap keeps every section', () => {
+    const text = describeCodemode([small, padded(exactPad)])
+    assert.equal(text.length, DESCRIPTION_CAP)
+    assert.deepEqual(sectionNames(text), ['Small', 'Pad'])
+  })
+
+  it('Proves C3: a list one over the cap drops the later section and says where it went', () => {
+    const text = describeCodemode([small, padded(exactPad + 1)])
+    assert.ok(text.length <= DESCRIPTION_CAP, `description is ${text.length} characters`)
+    assert.deepEqual(sectionNames(text), ['Small'])
+    assert.match(text, /`Pad`.*callable.*listed in `ALL_TOOLS`/)
+    assert.match(text, /`tools\.Small\(args\)` takes `a`, and resolves to the thing\./)
   })
 })
 

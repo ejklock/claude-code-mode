@@ -58,7 +58,29 @@ function toolSection(doc: ToolDoc): string {
   ].join('\n')
 }
 
-/** The model-facing description: the intro, the globals, then one section per tool in `docs` order. */
+/** The most characters of a tool's description the build sends to the model. */
+export const DESCRIPTION_CAP = 2048
+
+function omittedNote(omitted: readonly ToolDoc[]): string[] {
+  if (omitted.length === 0) return []
+  const names = omitted.map(doc => `\`${doc.name}\``).join(', ')
+  return [`${names}: callable too, with no section here, and listed in \`ALL_TOOLS\`.`]
+}
+
+function assemble(kept: readonly ToolDoc[], omitted: readonly ToolDoc[]): string {
+  const nested = ['Nested tools:', ...kept.map(toolSection)].join('\n\n')
+  return [INTRO, GLOBALS, nested, ...omittedNote(omitted)].join('\n\n')
+}
+
+/**
+ * The model-facing description: the intro, the globals, then one section per
+ * tool in `docs` order. When the whole does not fit the cap, the sections that
+ * do not fit are dropped from the end and named as callable through `ALL_TOOLS`.
+ */
 export function describeCodemode(docs: readonly ToolDoc[] = EXPOSED_DOCS): string {
-  return [INTRO, GLOBALS, ['Nested tools:', ...docs.map(toolSection)].join('\n\n')].join('\n\n')
+  for (let kept = docs.length; kept > 0; kept -= 1) {
+    const text = assemble(docs.slice(0, kept), docs.slice(kept))
+    if (text.length <= DESCRIPTION_CAP) return text
+  }
+  return assemble([], docs)
 }

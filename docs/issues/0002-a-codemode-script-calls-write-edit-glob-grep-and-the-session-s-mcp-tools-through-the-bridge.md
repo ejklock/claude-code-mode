@@ -30,6 +30,13 @@ Confirmed by the owner, 2026-10-06:
 - **MCP naming:** Pi's namespace form, `tools.<server>.<tool>(args)`, built with `toCodemodeIdentifier`, for parity with Pi. The option not taken is the flat `tools.mcp__server__tool`.
 - **Order:** this issue comes before issue 0001's slice 2 (the overhead measurement), so richer demos come first.
 
+Found during slicing, 2026-10-06:
+- **Glob and Grep do not exist in build 2.1.291.** The build's `claude-code-tools` types list `Write` and `Edit` but no `Glob` or `Grep`; search goes through `Bash`. Slice 1 is therefore `Write` and `Edit`. Glob and Grep join if a later build brings them back.
+- **The description is capped.** The build sends at most 2,048 characters of any tool's description to the model. The codemode description must stay under that as tools are added. Like Pi's inline budget, a tool that does not fit is still callable and listed in `ALL_TOOLS`, but it gets no section in the description.
+- **The budget follows Pi.** Confirmed by the owner after the slice 1 review: when sections do not fit, the description behaves as Pi's `createCodemodeDescription` does, with no warning about the limit and no error. Slice 2 adopts Pi's selection for MCP tools: the cheapest section first, one per group in turn, and a namespace heading marked `(some tools not listed)` or `(tools not listed)`. Slice 1 keeps its order-based drop, which leaves a bare "Nested tools:" header when nothing fits, as Pi's does.
+- **Tool sections move to the input schema, with Pi's 3,000-token budget.** The owner asked for Pi's budget. The engine cuts a tool's description at 2,048 characters, but sends its `inputSchema` whole, so in slice 2 the description keeps the intro and the globals under 2,048, and the tool sections go into the `code` parameter's description, within 3,000 estimated tokens (characters ÷ 4) as in Pi. Options not taken: the sections in the system prompt (issue 0004 rejected a longer prompt section) and keeping the 2,048 cap. Slice 2 proves the model still reads them: the adoption count of issue 0004 does not drop.
+- **Slices:** slice 1 adds `Write` and `Edit`, with a proof that the session's permission mode and rules hold for a script's edits. Slice 2 adds the MCP tools.
+
 ### Acceptance
 
 - A script that writes a file with `tools.Write`, edits it with `tools.Edit`, finds it with `tools.Glob` and `tools.Grep`, and reads it back returns the final content in one tool result.

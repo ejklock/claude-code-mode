@@ -27,7 +27,7 @@ Out:
 
 Confirmed by the owner, 2026-10-06:
 - **MCP declarations:** each MCP tool is declared with its description and an open argument object, because no schema is available at run time. The model already sees the MCP tool's real schema in its own tool list. The option not taken is to parse the engine-written `claude-code-mcp` types, which is fragile and present only after a save with servers connected.
-- **MCP naming:** Pi's namespace form, `tools.<server>.<tool>(args)`, built with `toCodemodeIdentifier`, for parity with Pi. The option not taken is the flat `tools.mcp__server__tool`.
+- **MCP naming:** the flat name, `tools.mcp__server__tool(args)`, built with `toCodemodeIdentifier`, and `tools["<name>"](args)` too, exactly as Pi does. Corrected by the owner on 2026-10-06: the first decision chose `tools.<server>.<tool>` believing it was Pi's form, but Pi's tools stay flat (pi-codemode 1.0.4 `runtime/prelude-source.js:208-218`), and a namespace only groups sections in the description. The option not taken is a nested object built by our child, which diverges from Pi.
 - **Order:** this issue comes before issue 0001's slice 2 (the overhead measurement), so richer demos come first.
 
 Found during slicing, 2026-10-06:

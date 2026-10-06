@@ -7,10 +7,11 @@ import type {
   ProcessSpawnResult,
   ToolCallArgs,
   ToolCallResult,
+  ToolInfo,
 } from 'claude-code'
 
-import { ANSWER_PATH, isExposedTool, parseChildMessage } from '../shared/protocol.ts'
-import type { CallAnswer, ChildMessage, RunRequest } from '../shared/protocol.ts'
+import { ANSWER_PATH, CODEMODE_TOOL_ID, isExposedTool, parseChildMessage } from '../shared/protocol.ts'
+import type { CallAnswer, ChildMessage, McpTool, RunRequest } from '../shared/protocol.ts'
 import type { CodemodeCall, CodemodeCallState, CodemodeRun } from '../types/index.d.ts'
 
 /**
@@ -21,6 +22,8 @@ export type BridgeHost = {
   pluginRoot: string
   spawn: (request: ProcessSpawnRequest) => HookStream<ProcessSpawnChunk, ProcessSpawnResult>
   callTool: (input: ToolCallArgs) => Promise<ToolCallResult>
+  /** The tools the model has now, built-in and MCP alike. */
+  listTools: () => Promise<ToolInfo[]>
   post: (url: string, init: HttpInit) => Promise<HttpResponse>
   /** Applies a change to the runs the transcript draws from. */
   publish: (change: (runs: CodemodeRun[]) => CodemodeRun[]) => Promise<void>
@@ -150,6 +153,8 @@ type RunState = {
   closing: DoneMessage | undefined
   problem: string | undefined
   stderr: string
+  /** The MCP tool names this run's script may call, besides the built-ins. */
+  mcpNames: ReadonlySet<string>
   answers: Promise<void>[]
   /** Settles when a problem is recorded, so a read blocked on the child can stop. */
   aborted: Promise<void>
@@ -157,7 +162,7 @@ type RunState = {
   tracker: RunTracker
 }
 
-function newRunState(tracker: RunTracker): RunState {
+function newRunState(tracker: RunTracker, mcpNames: ReadonlySet<string>): RunState {
   let abort = (): void => {}
   const aborted = new Promise<void>(resolve => {
     abort = resolve
@@ -167,6 +172,7 @@ function newRunState(tracker: RunTracker): RunState {
     closing: undefined,
     problem: undefined,
     stderr: '',
+    mcpNames,
     answers: [],
     aborted,
     abort,
@@ -212,14 +218,27 @@ export class CodemodeBridge {
 
   /** `runId` is the codemode call's tool_use_id, the key its transcript row draws from. */
   async run(code: string, runId: string): Promise<CodemodeOutcome> {
-    const request: RunRequest = { code, timeoutMs: this.timeoutMs }
+    const mcpTools = await this.connectedMcpTools()
+    const request: RunRequest = { code, timeoutMs: this.timeoutMs, mcpTools }
     const tracker = new RunTracker(this.host, runId)
     await tracker.begin(code)
-    const state = newRunState(tracker)
+    const state = newRunState(tracker, new Set(mcpTools.map(tool => tool.name)))
     const exit = await this.readChild(JSON.stringify(request), state)
     await Promise.allSettled(state.answers)
     await tracker.finish()
     return this.outcome(state, exit)
+  }
+
+  /** A list that cannot be read leaves the script with the built-ins; the model is told nothing new. */
+  private async connectedMcpTools(): Promise<McpTool[]> {
+    try {
+      const listed = await this.host.listTools()
+      return listed
+        .filter(tool => tool.mcp && tool.name !== CODEMODE_TOOL_ID)
+        .map(({ name, description }) => ({ name, description }))
+    } catch {
+      return []
+    }
   }
 
   private async readChild(input: string, state: RunState): Promise<string> {
@@ -266,7 +285,7 @@ export class CodemodeBridge {
 
   private async serve(call: CallMessage, socketPath: string, state: RunState): Promise<void> {
     await state.tracker.startCall(call)
-    const settled = await this.execute(call)
+    const settled = await this.execute(call, state.mcpNames)
     await state.tracker.settleCall(call.id, settled)
     try {
       await this.host.post(`http://bridge${ANSWER_PATH}`, {
@@ -279,7 +298,7 @@ export class CodemodeBridge {
     }
   }
 
-  private async execute(call: CallMessage): Promise<Settled> {
+  private async execute(call: CallMessage, mcpNames: ReadonlySet<string>): Promise<Settled> {
     const refused = (reason: string): Settled => ({
       answer: { id: call.id, ok: false, error: reason },
       state: 'denied',
@@ -290,7 +309,7 @@ export class CodemodeBridge {
       state: 'failed',
       reason,
     })
-    if (!isExposedTool(call.tool)) return refused(`tool ${call.tool} is not available to codemode scripts`)
+    if (!isExposedTool(call.tool) && !mcpNames.has(call.tool)) return refused(`tool ${call.tool} is not available to codemode scripts`)
     const input = Object.fromEntries(
       Object.entries(call.input).filter(([key]) => !RESERVED_KEYS.includes(key)),
     )

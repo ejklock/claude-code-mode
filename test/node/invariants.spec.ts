@@ -20,6 +20,7 @@ const DESCRIPTION_SNAPSHOT = [
   '- `text(value)` and `console.log(...)` add output; non-strings are JSON-stringified. A top-level `return` ends the script, and its value is not sent back.',
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
+  '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
   '',
   'Nested tools:',
   '',
@@ -253,7 +254,8 @@ describe('the description holds to the cap', () => {
     const text = describeCodemode()
     assert.ok(text.length <= DESCRIPTION_CAP, `description is ${text.length} characters`)
     assert.deepEqual(sectionNames(text), ['Read', 'Bash', 'Write', 'Edit'])
-    assert.doesNotMatch(text, /listed in `ALL_TOOLS`/)
+    assert.doesNotMatch(text, /callable too, with no section here/)
+    assert.match(text, /Connected MCP tools are callable too, as `tools\.<name>\(args\)`.*listed in `ALL_TOOLS`/)
   })
 
   it('Proves C3: a list exactly at the cap keeps every section', () => {

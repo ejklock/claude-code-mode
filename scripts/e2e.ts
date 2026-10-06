@@ -53,9 +53,16 @@ function resultText(content: unknown): string {
   return content.map(part => (part as { text?: string }).text ?? '').join('\n')
 }
 
-type RunOptions = { settingsFile: string; prompt: string; cwd: string; mode?: string }
+type RunOptions = {
+  settingsFile: string
+  prompt: string
+  cwd: string
+  mode?: string
+  mcpConfig?: string
+  env?: Record<string, string>
+}
 
-function runClaude({ settingsFile, prompt, cwd, mode }: RunOptions): Run {
+function runClaude({ settingsFile, prompt, cwd, mode, mcpConfig, env }: RunOptions): Run {
   const run = spawnSync(
     'claude',
     [
@@ -64,12 +71,13 @@ function runClaude({ settingsFile, prompt, cwd, mode }: RunOptions): Run {
       '--setting-sources', 'project',
       '--settings', settingsFile,
       ...(mode === undefined ? [] : ['--permission-mode', mode]),
+      ...(mcpConfig === undefined ? [] : ['--mcp-config', mcpConfig, '--strict-mcp-config']),
       '--output-format', 'stream-json',
       '--verbose',
       '--no-session-persistence',
       prompt,
     ],
-    { cwd, encoding: 'utf8', timeout: RUN_TIMEOUT_MS },
+    { cwd, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, env: { ...process.env, ...env } },
   )
   const events = run.stdout
     .split('\n')
@@ -96,6 +104,10 @@ type Scenario = {
   name: string
   rules: { permissions: { allow: string[]; deny?: string[] } }
   mode?: string
+  /** `fake` connects the stand-in MCP server; `none` runs strict with no server at all. */
+  mcp?: 'fake' | 'none'
+  /** Environment variables for this run only. */
+  env?: Record<string, string>
   /** The script, given the throwaway file it may touch. */
   script: (file: string) => string
   /** The file's content before the run; absent means no file. */
@@ -110,6 +122,16 @@ const WRITE_SCRIPT = (file: string): string =>
     `const f = ${JSON.stringify(file)}`,
     `try { text(await tools.Write({ file_path: f, content: 'written-by-script' })); text('WRITE-OK') } catch (e) { text('DENIAL: ' + e.message) }`,
   ].join('\n')
+
+const MCP_TOOL = 'mcp__fake__echo'
+const MCP_SERVER = join(ROOT, 'test/fixtures/fake-mcp-server.mjs')
+
+const MCP_CONFIGS = {
+  fake: { mcpServers: { fake: { command: 'node', args: [MCP_SERVER] } } },
+  none: { mcpServers: {} },
+}
+
+const LISTS_MCP_TOOL = `text('LISTED: ' + ALL_TOOLS.some(tool => tool.name === '${MCP_TOOL}'))`
 
 const SCENARIOS: Scenario[] = [
   {
@@ -163,6 +185,71 @@ const SCENARIOS: Scenario[] = [
       ['no mode: nothing was written', read(file) === undefined],
     ],
   },
+  {
+    name: 'mcp allowed',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    script: () =>
+      [LISTS_MCP_TOOL, `text('ECHO: ' + await tools.${MCP_TOOL}({ text: 'e2e-ping-31' }))`].join('\n'),
+    checks: text => [
+      ['mcp allowed: ALL_TOOLS lists the MCP tool', text.includes('LISTED: true')],
+      ['mcp allowed: the result holds the server answer', text.includes('ECHO: fake-echo: e2e-ping-31')],
+    ],
+  },
+  {
+    name: 'mcp denied',
+    rules: { permissions: { allow: [TOOL], deny: [MCP_TOOL] } },
+    mcp: 'fake',
+    script: () =>
+      [
+        LISTS_MCP_TOOL,
+        `try { text('NOT-DENIED: ' + await tools.${MCP_TOOL}({ text: 'e2e-ping-31' })) } catch (e) { text('DENIAL: ' + e.message) }`,
+      ].join('\n'),
+    checks: text => [
+      ['mcp denied: a deny rule hides the tool, so ALL_TOOLS does not list it', text.includes('LISTED: false')],
+      ['mcp denied: the call failed inside the script and the server never answered', text.includes('DENIAL:') && !text.includes('NOT-DENIED') && !text.includes('fake-echo:')],
+    ],
+  },
+  {
+    name: 'mcp deferred',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    env: { ENABLE_TOOL_SEARCH: 'true' },
+    script: () =>
+      [LISTS_MCP_TOOL, `text('ECHO: ' + await tools.${MCP_TOOL}({ text: 'e2e-ping-31' }))`].join('\n'),
+    checks: text => [
+      ['mcp deferred: ALL_TOOLS lists the tool with tool search forced on', text.includes('LISTED: true')],
+      ['mcp deferred: the result holds the server answer', text.includes('ECHO: fake-echo: e2e-ping-31')],
+    ],
+  },
+  {
+    name: 'mcp not allowed',
+    rules: { permissions: { allow: [TOOL] } },
+    mcp: 'fake',
+    script: () =>
+      [
+        LISTS_MCP_TOOL,
+        `try { text('NOT-DENIED: ' + await tools.${MCP_TOOL}({ text: 'e2e-ping-31' })) } catch (e) { text('DENIAL: ' + e.message) }`,
+      ].join('\n'),
+    checks: text => [
+      ['mcp not allowed: ALL_TOOLS lists the tool', text.includes('LISTED: true')],
+      ['mcp not allowed: the permission check refused the call', text.includes('DENIAL:') && !text.includes('NOT-DENIED') && !text.includes('does not exist')],
+    ],
+  },
+  {
+    name: 'mcp absent',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'none',
+    script: () =>
+      [
+        LISTS_MCP_TOOL,
+        `try { text('NOT-ABSENT: ' + await tools.${MCP_TOOL}({ text: 'e2e-ping-31' })) } catch (e) { text('ABSENT: ' + e.message) }`,
+      ].join('\n'),
+    checks: text => [
+      ['mcp absent: ALL_TOOLS does not list the tool', text.includes('LISTED: false')],
+      ['mcp absent: the call failed in the script', text.includes('ABSENT:') && !text.includes('NOT-ABSENT')],
+    ],
+  },
 ]
 
 type Outcome = { name: string; checks: Check[]; run: Run; text: string }
@@ -174,7 +261,9 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   const settingsFile = join(folder, 'settings.json')
   // The session's ambient default mode may allow writes, so each scenario names the stock one.
   writeFileSync(settingsFile, JSON.stringify({ permissions: { defaultMode: 'default', ...scenario.rules.permissions } }))
-  const run = runClaude({ settingsFile, prompt: promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode })
+  const mcpConfig = scenario.mcp === undefined ? undefined : join(folder, 'mcp.json')
+  if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
+  const run = runClaude({ settingsFile, prompt: promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
   const { called, text } = codemodeResult(run.events)
   const checks: Check[] = [[`${scenario.name}: the codemode tool was called`, called], ...scenario.checks(text, file)]
   return { name: scenario.name, checks, run, text }

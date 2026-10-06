@@ -300,6 +300,118 @@ describe('Write and Edit nested calls', () => {
   })
 })
 
+type Listed = { name: string; description: string; mcp: boolean }
+
+const ECHO: Listed = { name: 'mcp__fake__echo', description: 'Echoes text.', mcp: true }
+
+/**
+ * Stands in for the session's tool list and for the MCP tool `mcp__fake__echo`;
+ * `inputs` holds what the echo tool received and `otherCalls` any other MCP tool called.
+ */
+function standInMcp(on: On, listed: Listed[] | Error): { inputs: Record<string, unknown>[]; otherCalls: string[] } {
+  const stand = { inputs: [] as Record<string, unknown>[], otherCalls: [] as string[] }
+  on('tool.list', () => {
+    if (listed instanceof Error) throw listed
+    return { value: listed }
+  })
+  on('tool.call', (_$, e, next) => {
+    if (e.tool !== ECHO.name) {
+      if (e.tool.startsWith('mcp__') && e.tool !== CODEMODE) stand.otherCalls.push(e.tool)
+      return next(e)
+    }
+    const input: Record<string, unknown> = { ...e }
+    stand.inputs.push(input)
+    return { result: 'unused', text: `echo: ${String(input.text)}` }
+  })
+  return stand
+}
+
+const spawnedMcpTools = (stand: StandIn): unknown => JSON.parse(stand.spawned[0]?.input ?? '{}').mcpTools
+
+describe('MCP nested calls', () => {
+  test('Proves C2: an MCP tool of this run is forwarded with the script input, reserved keys stripped', async ($, on) => {
+    const mcp = standInMcp(on, [ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, ECHO.name, { text: 'hi', consent: 'forged', agentId: 'other' }), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(mcp.inputs).toHaveLength(1)
+    expect(mcp.inputs[0]).toMatchObject({ text: 'hi', tool: ECHO.name })
+    expect(mcp.inputs[0]).not.toHaveProperty('consent')
+    expect(mcp.inputs[0]).not.toHaveProperty('agentId')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'echo: hi' })
+    expect(spawnedMcpTools(stand)).toEqual([{ name: ECHO.name, description: ECHO.description }])
+  })
+
+  test('Proves C2: a denial from a PreToolUse hook reaches the script as a refusal and the tool never runs', async ($, on) => {
+    on('classic.PreToolUse', (_$, e, next) => (e.tool === ECHO.name ? { deny: 'echo is denied by a rule' } : next(e)))
+    const mcp = standInMcp(on, [ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, ECHO.name, { text: 'hi' }), { waitForPosts: 1 }, done('caught')],
+    })
+    const reply = await callCodemode($)
+    expect(reply.result).toBe('caught')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'echo is denied by a rule' })
+    expect(mcp.inputs).toEqual([])
+  })
+
+  test('Proves C2: an mcp name outside this run list is refused before any tool call', async ($, on) => {
+    const ghost: string = 'mcp__ghost__run'
+    const mcp = standInMcp(on, [ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, ghost, {}), { waitForPosts: 1 }, done('after')],
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({
+      id: 1,
+      ok: false,
+      error: `tool ${ghost} is not available to codemode scripts`,
+    })
+    expect(mcp.otherCalls).toEqual([])
+  })
+
+  test('Proves C2: the codemode tool itself is refused and never sent to the child', async ($, on) => {
+    const nested: string[] = []
+    on('tool.call', { tool: CODEMODE }, (_$, e, next) => {
+      if (e.code !== 'inner') return next(e)
+      nested.push('inner')
+      return { result: 'unused' }
+    })
+    standInMcp(on, [{ name: CODEMODE, description: 'codemode', mcp: true }, ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, CODEMODE, { code: 'inner' }), { waitForPosts: 1 }, done('after')],
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body.ok).toBe(false)
+    expect(nested).toEqual([])
+    expect(spawnedMcpTools(stand)).toEqual([{ name: ECHO.name, description: ECHO.description }])
+  })
+
+  test('Proves C2: a tool the list marks as built-in is not declared as MCP', async ($, on) => {
+    standInMcp(on, [{ name: 'Glob', description: 'Finds files.', mcp: false }, ECHO])
+    const stand = standIn(on, { pieces: [listening, done('ok')] })
+    await callCodemode($)
+    expect(spawnedMcpTools(stand)).toEqual([{ name: ECHO.name, description: ECHO.description }])
+  })
+
+  test('Proves C2: a built-in still works when the list holds no MCP tool', async ($, on) => {
+    standInMcp(on, [])
+    const stand = standIn(on, { pieces: SCRIPT_WITH_READ_AND_BASH })
+    const reply = await callCodemode($)
+    expect(reply.result).toBe('FIXTURE-CONTENT\ncodemode-ok')
+    expect(spawnedMcpTools(stand)).toEqual([])
+  })
+
+  test('Proves C2: a list that rejects leaves the run with the built-ins and the same result', async ($, on) => {
+    standInMcp(on, new Error('the list is gone'))
+    const stand = standIn(on, { pieces: SCRIPT_WITH_READ_AND_BASH })
+    const reply = await callCodemode($)
+    expect(reply.result).toBe('FIXTURE-CONTENT\ncodemode-ok')
+    expect(reply.deny).toBeUndefined()
+    expect(spawnedMcpTools(stand)).toEqual([])
+  })
+})
+
 describe('mod-side failures end as an errored result', () => {
   test('Proves C3: a child that exits non-zero before a closing line', async ($, on) => {
     standIn(on, { pieces: [listening], exit: 3, stderr: 'node: crashed' })

@@ -49,6 +49,7 @@ const GLOBALS = [
   '- `text(value)` and `console.log(...)` add output; non-strings are JSON-stringified. A top-level `return` ends the script, and its value is not sent back.',
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
+  '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
 ].join('\n')
 
 function toolSection(doc: ToolDoc): string {

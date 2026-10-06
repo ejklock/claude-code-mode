@@ -98,10 +98,30 @@ export function declarationOf(name: ExposedTool): {
 /** Path the mod POSTs each answer to, over the child's Unix socket. */
 export const ANSWER_PATH = '/answer'
 
+/** The session's own tool; a script never calls it, or a codemode call could nest without end. */
+export const CODEMODE_TOOL_ID = 'mcp__codemode__codemode'
+
+/** A connected MCP tool a script may call, by its full `mcp__server__tool` name. */
+export type McpTool = {
+  name: string
+  description: string
+}
+
+/** What the child declares for an MCP tool: no input schema is known at run time, so it is open. */
+export function mcpDeclarationOf(tool: McpTool): {
+  description: string
+  inputSchema: Record<string, unknown>
+  outputSchema: Record<string, unknown>
+} {
+  return { description: tool.description, inputSchema: { type: 'object' }, outputSchema: { type: 'string' } }
+}
+
 /** What the mod writes to the child's standard input. */
 export type RunRequest = {
   code: string
   timeoutMs: number
+  /** Absent means none; the parser always fills it. */
+  mcpTools?: McpTool[]
 }
 
 /** One JSON line the child writes to standard output. */
@@ -132,10 +152,26 @@ export function isExposedTool(name: string): name is ExposedTool {
   return (EXPOSED_TOOLS as readonly string[]).includes(name)
 }
 
-export function parseRunRequest(text: string): RunRequest | undefined {
+export function parseRunRequest(text: string): Required<RunRequest> | undefined {
   const json = parseJson(text)
   const isValid = json !== undefined && typeof json.code === 'string' && typeof json.timeoutMs === 'number'
-  return isValid ? { code: json.code as string, timeoutMs: json.timeoutMs as number } : undefined
+  if (!isValid) return undefined
+  const mcpTools = parseMcpTools(json.mcpTools)
+  return mcpTools === undefined ? undefined : { code: json.code as string, timeoutMs: json.timeoutMs as number, mcpTools }
+}
+
+/** An absent list is no tools; a list with any malformed entry is rejected whole. */
+function parseMcpTools(value: unknown): McpTool[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const tools: McpTool[] = []
+  for (const entry of value as unknown[]) {
+    const isObject = typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+    const { name, description } = isObject ? (entry as Json) : {}
+    if (typeof name !== 'string' || name === '' || typeof description !== 'string') return undefined
+    tools.push({ name, description })
+  }
+  return tools
 }
 
 export function parseChildMessage(line: string): ChildMessage | undefined {

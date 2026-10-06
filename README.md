@@ -1,10 +1,10 @@
 # codemode for Claude Code: a bridge to Pi's code mode
 
-**Code mode for Claude Code:** one tool that lets the model write a JavaScript script that calls the session's own tools (`Read`, `Bash`, `Write`, `Edit`, and later MCP servers), and returns only the script's output. Many tool calls become one, and large intermediate results stay out of the context window.
+**Code mode for Claude Code:** one tool that lets the model write a JavaScript script that calls the session's own tools (`Read`, `Bash`, `Write`, `Edit`, and the session's MCP tools), and returns only the script's output. Many tool calls become one, and large intermediate results stay out of the context window.
 
 **Inspired by [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)**, by Earendil. Earendil's post [**"You Said No MCP!"**](https://earendil.com/posts/you-said-no-mcp/) explains the idea and why it works. This project does not reimplement it. **It is a bridge:** it runs Pi's own script runtime, [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) (QuickJS in WebAssembly), and connects each `tools.*` call the script makes to Claude Code's own tool call. Your permission rules, prompts and hooks still apply to every one of them, and a script written for Pi's codemode reads the same here.
 
-> **Status: pilot (v0.1.0).** It exposes `Read`, `Bash`, `Write` and `Edit` for now. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the real token and turn savings are not measured yet.
+> **Status: pilot (v0.1.0).** It exposes `Read`, `Bash`, `Write` and `Edit`, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the real token and turn savings are not measured yet.
 
 ![Claude Code picks the codemode tool on its own: one script lists the TypeScript files with git, reads all five in parallel, filters the TODO lines, and only the filtered output returns](docs/media/codemode-demo.gif)
 
@@ -95,6 +95,7 @@ In a script:
 | `await tools.Bash({ command, timeout? })` | Resolves to the command's output. |
 | `await tools.Write({ file_path, content })` | Writes the file; resolves to a confirmation. |
 | `await tools.Edit({ file_path, old_string, new_string, replace_all? })` | Replaces text in the file; resolves to a confirmation. |
+| `await tools.mcp__server__tool(args)` / `await tools["mcp__server__tool"](args)` | Calls a connected MCP tool by its full name; resolves to its text. A tool that is not connected is absent, and `ALL_TOOLS` lists those that are. |
 | `text(value)` / `console.log(value)` | Adds to the output that returns to the model. |
 
 The script is the body of an async function, so top-level `await` works. `return` and `exit()` end the script; only what it prints with `text()` or `console.log()` comes back. Scripts time out after 120 seconds. Every `tools.*` call meets the session's permission mode and rules as a direct call does, so `Write` and `Edit` follow `acceptEdits`, allow rules and deny rules, and a refusal reaches the script as a rejection.

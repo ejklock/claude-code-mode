@@ -6,8 +6,15 @@ import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ANSWER_PATH, EXPOSED_TOOLS, declarationOf, parseCallAnswer, parseRunRequest } from '../shared/protocol.ts'
-import type { CallAnswer, ChildMessage, ExposedTool } from '../shared/protocol.ts'
+import {
+  ANSWER_PATH,
+  EXPOSED_TOOLS,
+  declarationOf,
+  mcpDeclarationOf,
+  parseCallAnswer,
+  parseRunRequest,
+} from '../shared/protocol.ts'
+import type { CallAnswer, ChildMessage, McpTool } from '../shared/protocol.ts'
 
 function send(message: ChildMessage): Promise<void> {
   return new Promise(resolve => process.stdout.write(`${JSON.stringify(message)}\n`, () => resolve()))
@@ -90,7 +97,7 @@ class CodemodeChild {
     }
     const board = new AnswerBoard()
     const socket = new AnswerSocket(board)
-    const sandbox = new CodemodeSandbox({ tools: this.tools(board), timeoutMs: request.timeoutMs })
+    const sandbox = new CodemodeSandbox({ tools: this.tools(board, request.mcpTools), timeoutMs: request.timeoutMs })
     try {
       await socket.listen()
       await send({ type: 'listening', socketPath: socket.path })
@@ -106,11 +113,12 @@ class CodemodeChild {
     }
   }
 
-  private tools(board: AnswerBoard): CodemodeTool[] {
-    return EXPOSED_TOOLS.map(name => ({
-      name,
-      ...declarationOf(name),
-      execute: (args, { signal }) => board.ask(name, this.asInput(args), signal),
+  private tools(board: AnswerBoard, mcpTools: readonly McpTool[]): CodemodeTool[] {
+    const builtIn = EXPOSED_TOOLS.map(name => ({ name, ...declarationOf(name) }))
+    const mcp = mcpTools.map(tool => ({ name: tool.name, ...mcpDeclarationOf(tool) }))
+    return [...builtIn, ...mcp].map(declared => ({
+      ...declared,
+      execute: (args, { signal }) => board.ask(declared.name, this.asInput(args), signal),
     }))
   }
 

@@ -4,6 +4,7 @@ import type { Register } from 'claude-code'
 import { CodemodeBridge } from './bridge.ts'
 import { GUIDELINE, describeCodemode } from './describe.ts'
 import { registerRender } from './render.tsx'
+import { CODEMODE_TOOL_ID } from '../shared/protocol.ts'
 
 // The state scan reads the reference from this file, so render.tsx spells its
 // own; an invariant spec fails when the two differ.
@@ -12,7 +13,7 @@ const RUNS = atom({ plugin: 'codemode', key: 'runs' } as const, [])
 const TOOL_NAME = 'codemode'
 const SCRIPT_TIMEOUT_MS = 120_000
 
-const TOOL_ID = `mcp__codemode__${TOOL_NAME}`
+const TOOL_ID = CODEMODE_TOOL_ID
 
 const INPUT_SCHEMA = {
   type: 'object',
@@ -46,6 +47,7 @@ export const register: Register = (on, options) => {
         pluginRoot: $.plugin.root,
         spawn: request => $.process.spawn(request),
         callTool: input => $.tool.call(input),
+        listTools: () => $.tool.list(),
         post: (url, init) => $.http.fetch(url, init),
         publish: async change => {
           await update($, RUNS, change)

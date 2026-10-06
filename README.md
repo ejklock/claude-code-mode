@@ -2,13 +2,31 @@
 
 **Code mode for Claude Code:** one tool that lets the model write a JavaScript script that calls the session's own tools (`Read`, `Bash`, `Write`, `Edit`, and the session's MCP tools), and returns only the script's output. Many tool calls become one, and large intermediate results stay out of the context window.
 
-**Inspired by [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)**, by Earendil. Earendil's post [**"You Said No MCP!"**](https://earendil.com/posts/you-said-no-mcp/) explains the idea and why it works. This project does not reimplement it. **It is a bridge:** it runs Pi's own script runtime, [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) (QuickJS in WebAssembly), and connects each `tools.*` call the script makes to Claude Code's own tool call. Your permission rules, prompts and hooks still apply to every one of them, and a script written for Pi's codemode reads the same here.
+**Inspired by [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)**, by Earendil. Earendil's post [**"You Said No MCP!"**](https://earendil.com/posts/you-said-no-mcp/) explains the idea and why it works, and Armin Ronacher's [**"What is Codemode"**](https://lucumr.pocoo.org/2026/10/6/codemode/) describes it from the harness side. This project does not reimplement it. **It is a bridge:** it runs Pi's own script runtime, [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) (QuickJS in WebAssembly), and connects each `tools.*` call the script makes to Claude Code's own tool call. Your permission rules, prompts and hooks still apply to every one of them, and a script written for Pi's codemode reads the same here.
 
 > **Status: pilot (v0.1.0).** It exposes `Read`, `Bash`, `Write` and `Edit`, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the real token and turn savings are not measured yet.
 
 ![Claude Code picks the codemode tool on its own: one script lists the TypeScript files with git, reads all five in parallel, filters the TODO lines, and only the filtered output returns](docs/media/codemode-demo.gif)
 
 *The prompt never mentions codemode. Claude writes one script that runs `git ls-files`, reads five files in parallel with `Promise.allSettled`, and keeps only the TODO lines. The nested calls are listed live as they run, and only the script's output returns to the model.*
+
+## What it is and where it shines
+
+**What it is:** one tool, `codemode`. The model sends a short JavaScript script. The script runs in a sandbox and calls the session's tools as `tools.Read(...)`, `tools.Bash(...)`, `tools.Write(...)`, `tools.Edit(...)` and `tools.mcp__server__tool(...)`. Only what the script prints returns to the model. Every nested call still meets your permission rules, prompts and hooks.
+
+**What it is for:** work that takes many tool calls, where each call needs a model turn and each result fills the context.
+
+**Where it shines:**
+- **Batching:** read or search many files at once with `Promise.allSettled`, instead of one call per file.
+- **Filtering:** keep the matching lines and drop the rest, so a large result never reaches the context window.
+- **Chaining:** use the result of one call as the input of the next, such as a `git` listing followed by a read of each file, in one turn.
+- **MCP tools:** call several tools of a server, or of different servers, from one script.
+
+**Where it does not:** a single command, such as one `git grep`. Claude still calls `Bash` directly, which is the right choice.
+
+The token and turn savings are not measured yet; see the Roadmap. What is measured is that the model picks the tool on its own for tasks like these (see Use).
+
+**Read more:** Earendil's [Pi codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) and ["You Said No MCP!"](https://earendil.com/posts/you-said-no-mcp/); Armin Ronacher's ["What is Codemode"](https://lucumr.pocoo.org/2026/10/6/codemode/); [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/); [Anthropic's Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp).
 
 ## Why code mode
 
@@ -124,7 +142,7 @@ Decisions and open work live in [`docs/`](docs/index.md): the [constitution](doc
 
 ## Credits
 
-- The idea and the script API come from [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) by Earendil. Read ["You Said No MCP!"](https://earendil.com/posts/you-said-no-mcp/) for the reasoning behind it.
+- The idea and the script API come from [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) by Earendil. Read ["You Said No MCP!"](https://earendil.com/posts/you-said-no-mcp/) for the reasoning behind it, and Armin Ronacher's ["What is Codemode"](https://lucumr.pocoo.org/2026/10/6/codemode/) for what it adds beyond CLI-based tools.
 - The script runtime is [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) by Earendil Works, under the MIT license. This project only bridges it to Claude Code.
 
 This project is not affiliated with Anthropic or Earendil.

@@ -30,14 +30,16 @@ Measured with no model in the loop ([`node scripts/overhead.ts`](scripts/overhea
 
 The same tasks, with and without the plugin ([`node scripts/savings.ts`](scripts/savings.ts), 2026-10-06, Claude Code 2.1.292, claude-opus-5-5, 3 runs per side after one discarded warm-up, medians over all-correct runs, the prompt never naming codemode):
 
-| Task | Turns with / without | Output tokens with / without | Cost with / without |
-|---|---|---|---|
-| read 5 tracked files, report their TODOs | 2 / 7 | 574 / 966 | $0.023 / $0.039 |
-| `git log` → read each changed file | 2 / 4 | 443 / 414 | $0.021 / $0.024 |
-| write 3 files | 6 / 8 | 1,229 / 1,321 | $0.062 / $0.059 |
-| one `git grep` | 2 / 2 | 164 / 259 | $0.011 / $0.029 |
+| Task | Turns with / without | Cache-read tokens with / without | Output tokens with / without | Cost with / without |
+|---|---|---|---|---|
+| read 5 tracked files, report their TODOs | 2 / 7 | 38,188 / 54,286 | 574 / 966 | $0.023 / $0.039 |
+| `git log` → read each changed file | 2 / 4 | 38,222 / 55,041 | 443 / 414 | $0.021 / $0.024 |
+| write 3 files | 6 / 8 | 111,935 / 93,581 | 1,229 / 1,321 | $0.062 / $0.059 |
+| one `git grep` | 2 / 2 | 38,329 / 32,780 | 164 / 259 | $0.011 / $0.029 |
 
-Where many reads batch into one script, codemode cut the turns to less than a third, the output tokens to ~60% and the cost to ~60%, and the wall time fell with the turns (7.7 s against 11.9 s). On the write task the turns fell a quarter but tokens and cost were level. On the single `git grep` — where codemode should not help — the model never used it (0 of 3 runs) and called `Bash` directly; that row's differences are run-to-run noise, not a saving or a cost of the tool. Input tokens are near zero on both sides because the context rides the prompt cache; the codemode tool's own schema (~430 tokens) is inside the with-side numbers. Ranges, method and the honest caveats are in [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md); with 3 runs per side, only the large differences above are claimed.
+Why turns matter more than output tokens: every turn sends the whole context to the model again. With the prompt cache, that reread is billed as cache-read tokens, not as input, which is why the input column is near zero and the cache-read column carries the reread. Fewer turns mean fewer rereads, and the nested results a script handles never enter the context, so the turns that remain are smaller too.
+
+Where many reads batch into one script, codemode cut the turns to less than a third, the cache-read tokens by ~30%, the output tokens to ~60% and the cost to ~60%, and the wall time fell with the turns (7.7 s against 11.9 s). On the write task the turns fell a quarter, but the cache reads rose (likely because the tool's schema and the script's confirmation output ride every remaining turn), so tokens and cost were level. On the single `git grep` — where codemode should not help — the model never used it (0 of 3 runs) and called `Bash` directly; that row's differences are run-to-run noise, not a saving or a cost of the tool. Input tokens are near zero on both sides because the context rides the prompt cache; the codemode tool's own schema (~430 tokens) is inside the with-side numbers. Ranges, method and the honest caveats are in [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md); with 3 runs per side, only the large differences above are claimed.
 
 When a script fails, the result also lists the nested calls that already ran (`#<id> <tool> <args> — <state>: <detail>`), so a retry redoes only what did not. A call that threw, or never answered, is marked `unknown` rather than `failed`: it may have taken effect, so check before redoing it. In headless checks ([`node scripts/partial.ts`](scripts/partial.ts), 3 runs, a store whose create tool fails once, and with `--task ambiguous` one whose fourth create is stored but never answered) the model duplicated no write, before or after the change, so no saving is claimed; see [issue 0006](docs/issues/0006-a-failed-codemode-script-reports-which-nested-calls-already-ran-so-a-retry-does-not-repeat-side-effects.md).
 

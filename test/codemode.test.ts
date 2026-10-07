@@ -1245,6 +1245,39 @@ describe('the codemode mode, tool.describe', () => {
   })
 })
 
+describe('the deferred and direct modes, tool.describe', () => {
+  const engineAnswers = (on: On, isDeferred: true | undefined): void => {
+    on('tool.describe', (_$, e) => ({ description: e.description, ...(isDeferred === undefined ? {} : { isDeferred }) }))
+  }
+
+  test('Proves C1: a deferred-mode tool is answered deferred with the engine text', { options: { mcpDeferred: 'fake' } }, async ($, on) => {
+    engineAnswers(on, undefined)
+    expect(await describeTool($, ECHO.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+  })
+
+  test('Proves C1: a direct-mode tool is answered not deferred with the engine text', { options: { mcpDirect: 'fake' } }, async ($, on) => {
+    engineAnswers(on, true)
+    const answer = await describeTool($, ECHO.name)
+    expect(answer.isDeferred ?? false).toBe(false)
+    expect(answer.description).toBe(ENGINE_TEXT)
+  })
+
+  test(
+    'Proves C1: an exact direct name beats the deferred server',
+    { options: { mcpDirect: 'fake__echo', mcpDeferred: 'fake' } },
+    async ($, on) => {
+      engineAnswers(on, true)
+      expect((await describeTool($, ECHO.name)).isDeferred ?? false).toBe(false)
+      expect((await describeTool($, OTHER_FAKE.name)).isDeferred).toBe(true)
+    },
+  )
+
+  test('Proves C1: a tool with no mode keeps the engine answer', { options: { mcpDirect: 'fake' } }, async ($, on) => {
+    engineAnswers(on, true)
+    expect(await describeTool($, ELSEWHERE.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+  })
+})
+
 describe('the codemode mode, attachment lines', () => {
   const fnLine = (name: string) => `<function>{"description":"d","name":"${name}","parameters":{}}</function>`
 

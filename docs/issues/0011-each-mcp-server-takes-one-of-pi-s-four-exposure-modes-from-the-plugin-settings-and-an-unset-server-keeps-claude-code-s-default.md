@@ -49,6 +49,8 @@ Confirmed by the owner, 2026-10-07, after reading Pi's guide:
 
 Found on 2026-10-07 with a throwaway plugin installed in build 2.1.292: the manifest has no list type, and `claude plugin validate` accepts a list only as `"type": "string", "multiple": true`. `/config` draws a plugin's choice, boolean and text fields but not a `multiple` one, and draws nothing for a `--plugin-dir` plugin. `/plugin configure <plugin>` draws it as one text line and stores what is typed as one string (`"codegraph, claude_ai_Gmail"`), which `register` receives as a string. So each setting is read as either a list or one comma-separated string.
 
+Confirmed by the owner, 2026-10-07, after the slice 3 e2e: **`deferred` keeps its limit.** The hook answers `isDeferred: true`, but with `ENABLE_TOOL_SEARCH=auto` the engine lists the small stand-in server up front and ignores that answer: the tool's schema stays in the request and the model called it directly, with no ToolSearch. Where the engine already defers a tool (`ENABLE_TOOL_SEARCH=true`), the mode changes nothing. The mods API cannot drop a schema from the request, so `deferred` takes effect only for a tool the engine is willing to defer; its proof is the kit test of the describe answer, and no e2e scenario claims more. Not taken: also removing the tool's `<function>` line from the always-loaded block, which would hide the text while the schema stays callable; and dropping the mode.
+
 Settled for the build, cheap to reverse: when two patterns from different lists match one tool, the lists are read in the order `mcpHidden`, `mcpCodemode`, `mcpDeferred`, `mcpDirect`, each in its written order, and the first match wins; `hidden` first fails safe. The same entry in two lists fails the load.
 
 ### Acceptance

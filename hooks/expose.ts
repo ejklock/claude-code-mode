@@ -72,13 +72,28 @@ const connected = async ($: Session): Promise<string[] | undefined> => {
 const inCodemode = (exposure: Exposure, names: readonly string[]): string[] =>
   names.filter(name => modeOf(exposure, name) === 'codemode')
 
+type Describe = { readonly description: string; readonly isDeferred?: boolean }
+
+/** The describe answer a tool's mode asks for; a mode the plugin does not set keeps the engine's answer. */
+function describeAnswer<A extends Describe>(exposure: Exposure, tool: string, answer: A): A {
+  const mode = modeOf(exposure, tool)
+  if (mode === 'deferred') return { ...answer, isDeferred: true }
+  if (mode === 'direct') return { ...answer, isDeferred: false }
+  if (mode !== 'codemode') return answer
+  return { ...answer, description: `${callNote(tool)}\n\n${answer.description}`, isDeferred: true }
+}
+
+/** The attachment text without the codemode-mode tools, plus the instructions line on an instructions delta. */
+function attachmentText(text: string, type: string, group: readonly string[], names: readonly string[]): string {
+  const kept = withoutTools(text, group)
+  return type === 'mcp_instructions_delta' ? `${kept}\n\n${instructionsLine(group, names)}` : kept
+}
+
 /** Hides the codemode-mode MCP tools from the model outside the codemode tool; a script still calls them. */
 export function registerExposure(on: On, exposure: Exposure): void {
-  on('tool.describe', async (_$, e, next) => {
-    const answer = await next(e)
-    if (modeOf(exposure, e.tool) !== 'codemode') return answer
-    return { ...answer, description: `${callNote(e.tool)}\n\n${answer.description}`, isDeferred: true as const }
-  }).catch((_$, e, next) => next(e))
+  on('tool.describe', async (_$, e, next) => describeAnswer(exposure, e.tool, await next(e))).catch((_$, e, next) =>
+    next(e),
+  )
 
   on('prompt.attachment', async ($, e, next) => {
     const answer = await next(e)
@@ -87,11 +102,7 @@ export function registerExposure(on: On, exposure: Exposure): void {
     if (names === undefined) return answer
     const group = inCodemode(exposure, names)
     if (group.length === 0) return answer
-    const kept = withoutTools(answer.text, group)
-    if (e.type === 'mcp_instructions_delta') {
-      return { ...answer, text: `${kept}\n\n${instructionsLine(group, names)}` }
-    }
-    return { ...answer, text: kept }
+    return { ...answer, text: attachmentText(answer.text, e.type, group, names) }
   }).catch((_$, e, next) => next(e))
 }
 

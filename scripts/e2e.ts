@@ -93,9 +93,9 @@ function runClaude({ settingsFile, prompt, cwd, mode, mcpConfig, env }: RunOptio
 }
 
 /** What the model's one codemode call returned, or `undefined` when it never called it. */
-function codemodeResult(events: Event[]): { called: boolean; text: string; code: string } {
+function codemodeResult(events: Event[], tool: string = TOOL): { called: boolean; text: string; code: string } {
   const all = events.flatMap(blocks)
-  const use = all.find(block => block.type === 'tool_use' && block.name === TOOL)
+  const use = all.find(block => block.type === 'tool_use' && block.name === tool)
   const result = all.find(block => block.type === 'tool_result' && block.tool_use_id === use?.id)
   const code = (use?.input as { code?: unknown } | undefined)?.code
   return {
@@ -121,6 +121,8 @@ type Scenario = {
   ask?: string
   /** The plugin's settings for this run, written under `pluginConfigs`. */
   options?: Record<string, string>
+  /** The tool whose call and result the run is judged on, when it is not the codemode tool. */
+  resultOf?: string
   /** `calls` holds the name of every tool_use block of the run, in order. */
   checks: (text: string, file: string, code: string, calls: string[]) => Check[]
 }
@@ -280,6 +282,20 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'mcp direct mode',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    env: { ENABLE_TOOL_SEARCH: 'true' },
+    options: { mcpDirect: 'fake' },
+    resultOf: MCP_TOOL,
+    ask: `Call the ${MCP_TOOL} tool with the text e2e-ping-31 and reply with its answer verbatim.`,
+    script: () => '',
+    checks: (text, _file, _code, calls) => [
+      ['mcp direct mode: the result holds the server answer', text.includes('fake-echo: e2e-ping-31')],
+      ['mcp direct mode: the model made no ToolSearch call before the echo', !calls.slice(0, calls.indexOf(MCP_TOOL)).includes('ToolSearch')],
+    ],
+  },
+  {
     name: 'mcp absent',
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'none',
@@ -339,13 +355,13 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   const mcpConfig = scenario.mcp === undefined ? undefined : join(folder, 'mcp.json')
   if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
   const run = runClaude({ settingsFile, prompt: scenario.ask ?? promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
-  const { called, text, code } = codemodeResult(run.events)
+  const { called, text, code } = codemodeResult(run.events, scenario.resultOf)
   const calls = run.events
     .flatMap(blocks)
     .filter(block => block.type === 'tool_use')
     .map(block => block.name ?? '')
   const checks: Check[] = [
-    [`${scenario.name}: the codemode tool was called`, called],
+    [`${scenario.name}: the ${scenario.resultOf ?? TOOL} tool was called`, called],
     ...scenario.checks(text, file, code, calls),
   ]
   return { name: scenario.name, checks, run, text }

@@ -1141,3 +1141,57 @@ describe('a done nested call whose tool ran read-only', () => {
     expect(runs[0]?.calls.map(row => row.state)).toEqual(['done', 'failed'])
   })
 })
+
+describe('the exposure settings, mod side', () => {
+  test(
+    'Proves C4: one entry in two lists fails the load, naming the entry',
+    { options: { mcpCodemode: ['codegraph'], mcpHidden: ['codegraph'] } },
+    async ($, on) => {
+      on('tool.register', (_$, e) => ({ value: { tool: `mcp__codemode__${e.name}` } }))
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+      await expect($.session.start({ cwd: '/work', surface: null, isInteractive: false })).rejects.toThrow('codegraph')
+    },
+  )
+
+  test(
+    'Proves C4: distinct entries load and the codemode tool still registers',
+    { options: { mcpCodemode: ['codegraph'], mcpHidden: ['other'] } },
+    async ($, on) => {
+      const registered: string[] = []
+      on('tool.register', (_$, e) => {
+        registered.push(e.name)
+        return { value: { tool: `mcp__codemode__${e.name}` } }
+      })
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+      await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+      expect(registered).toEqual(['codemode'])
+    },
+  )
+})
+
+describe('the exposure settings as /plugin configure stores them', () => {
+  test(
+    'Proves C9: a comma-separated string loads and the codemode tool registers',
+    { options: { mcpCodemode: 'codegraph, claude_ai_Gmail' } },
+    async ($, on) => {
+      const registered: string[] = []
+      on('tool.register', (_$, e) => {
+        registered.push(e.name)
+        return { value: { tool: `mcp__codemode__${e.name}` } }
+      })
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+      await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+      expect(registered).toEqual(['codemode'])
+    },
+  )
+
+  test(
+    'Proves C9: one name in two string settings fails the load, naming it',
+    { options: { mcpCodemode: 'codegraph', mcpHidden: 'codegraph' } },
+    async ($, on) => {
+      on('tool.register', (_$, e) => ({ value: { tool: `mcp__codemode__${e.name}` } }))
+      on('session.start', (_$, e) => ({ cwd: e.cwd }))
+      await expect($.session.start({ cwd: '/work', surface: null, isInteractive: false })).rejects.toThrow('codegraph')
+    },
+  )
+})

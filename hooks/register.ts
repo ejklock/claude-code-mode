@@ -3,6 +3,7 @@ import type { Register, ToolInfo } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
 import { GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
+import { readExposure } from './exposure.ts'
 import { registerRender } from './render.tsx'
 import { CODEMODE_TOOL_ID } from '../shared/protocol.ts'
 
@@ -36,6 +37,8 @@ async function readCodeText(list: ListTools): Promise<string | undefined> {
 }
 
 export const register: Register = (on, options) => {
+  // Read first so a bad setting fails the load; the hooks of the exposure modes use it.
+  const _exposure = readExposure(options)
   registerRender(on, options)
   // Lost on a hot reload, which costs one more registration of the same text.
   let registeredText: string | undefined

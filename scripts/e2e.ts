@@ -123,8 +123,8 @@ type Scenario = {
   options?: Record<string, string>
   /** The tool whose call and result the run is judged on, when it is not the codemode tool. */
   resultOf?: string
-  /** `calls` holds the name of every tool_use block of the run, in order. */
-  checks: (text: string, file: string, code: string, calls: string[]) => Check[]
+  /** `calls` holds the name of every tool_use block of the run, in order; `results` the text of every tool_result block. */
+  checks: (text: string, file: string, code: string, calls: string[], results: string[]) => Check[]
 }
 
 const read = (file: string): string | undefined => (existsSync(file) ? readFileSync(file, 'utf8') : undefined)
@@ -296,6 +296,21 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'mcp hidden mode',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    options: { mcpHidden: 'fake' },
+    ask: [
+      'Get the fake echo of the text e2e-ping-31 by any means and report what happened.',
+      `Call the ${TOOL} tool first, with a script whose first line is exactly: ${LISTS_MCP_TOOL}`,
+    ].join('\n'),
+    script: () => '',
+    checks: (text, _file, _code, _calls, results) => [
+      ['mcp hidden mode: no tool result anywhere holds the server answer', !results.some(result => result.includes('fake-echo: e2e-ping-31'))],
+      ['mcp hidden mode: the script ran and saw the tool unlisted', text.includes('LISTED: false')],
+    ],
+  },
+  {
     name: 'mcp absent',
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'none',
@@ -360,9 +375,13 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
     .flatMap(blocks)
     .filter(block => block.type === 'tool_use')
     .map(block => block.name ?? '')
+  const results = run.events
+    .flatMap(blocks)
+    .filter(block => block.type === 'tool_result')
+    .map(block => resultText(block.content))
   const checks: Check[] = [
     [`${scenario.name}: the ${scenario.resultOf ?? TOOL} tool was called`, called],
-    ...scenario.checks(text, file, code, calls),
+    ...scenario.checks(text, file, code, calls, results),
   ]
   return { name: scenario.name, checks, run, text }
 }

@@ -1246,7 +1246,7 @@ describe('the codemode mode, tool.describe', () => {
 })
 
 describe('the deferred and direct modes, tool.describe', () => {
-  const engineAnswers = (on: On, isDeferred: true | undefined): void => {
+  const engineAnswers = (on: On, isDeferred: boolean | undefined): void => {
     on('tool.describe', (_$, e) => ({ description: e.description, ...(isDeferred === undefined ? {} : { isDeferred }) }))
   }
 
@@ -1255,10 +1255,15 @@ describe('the deferred and direct modes, tool.describe', () => {
     expect(await describeTool($, ECHO.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
   })
 
+  test('Proves C4: a deferred-mode tool is answered deferred when the engine answers not deferred', { options: { mcpDeferred: 'fake' } }, async ($, on) => {
+    engineAnswers(on, false)
+    expect(await describeTool($, ECHO.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+  })
+
   test('Proves C1: a direct-mode tool is answered not deferred with the engine text', { options: { mcpDirect: 'fake' } }, async ($, on) => {
     engineAnswers(on, true)
     const answer = await describeTool($, ECHO.name)
-    expect(answer.isDeferred ?? false).toBe(false)
+    expect(answer.isDeferred).toBe(false)
     expect(answer.description).toBe(ENGINE_TEXT)
   })
 
@@ -1267,7 +1272,7 @@ describe('the deferred and direct modes, tool.describe', () => {
     { options: { mcpDirect: 'fake__echo', mcpDeferred: 'fake' } },
     async ($, on) => {
       engineAnswers(on, true)
-      expect((await describeTool($, ECHO.name)).isDeferred ?? false).toBe(false)
+      expect((await describeTool($, ECHO.name)).isDeferred).toBe(false)
       expect((await describeTool($, OTHER_FAKE.name)).isDeferred).toBe(true)
     },
   )
@@ -1407,5 +1412,134 @@ describe('the codemode mode, exposureSync', () => {
     const { invalidated, session } = fixture(() => [], true)
     await expect(sync()(session)).resolves.toBeUndefined()
     expect(invalidated).toEqual([])
+  })
+})
+
+describe('the hidden mode, model side', () => {
+  const HIDDEN = { options: { mcpHidden: 'fake' } }
+
+  test('Proves C1: the deferred list loses the hidden name and keeps the rest byte-identical', HIDDEN, async ($, on) => {
+    engineAttachments(on, [ECHO, ELSEWHERE])
+    const text = ['mcp__fake__echo', 'mcp__other__x', 'Read'].join('\n')
+    expect((await attach($, 'deferred_tools_delta', text)).text).toBe('mcp__other__x\nRead')
+  })
+
+  test('Proves C1: describe answers deferred with the engine description unchanged', HIDDEN, async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: false }))
+    const answer = await describeTool($, ECHO.name)
+    expect(answer).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+    expect(answer.description).not.toContain('tools.')
+  })
+
+  test('Proves C1: the instructions text is unchanged when no tool is in codemode mode', HIDDEN, async ($, on) => {
+    engineAttachments(on, [ECHO, OTHER_FAKE])
+    expect((await attach($, 'mcp_instructions_delta', '## fake\nUse it.')).text).toBe('## fake\nUse it.')
+  })
+
+  test(
+    'Proves C1: the instructions line names the codemode-mode tool and never the hidden one',
+    { options: { mcpHidden: 'fake__echo', mcpCodemode: 'fake' } },
+    async ($, on) => {
+      engineAttachments(on, [ECHO, OTHER_FAKE])
+      const text = (await attach($, 'mcp_instructions_delta', 'mcp__fake__echo\nprose')).text ?? ''
+      const added = text.split('\n').at(-1) ?? ''
+      expect(added).toContain('mcp__fake__other')
+      expect(added).not.toContain('echo')
+      expect(added).not.toContain('mcp__fake__*')
+      expect(text.split('\n')[0]).toBe('prose')
+    },
+  )
+})
+
+describe('the hidden mode, tool.check', () => {
+  const engineVerdict = (on: On): void => {
+    on('tool.check', () => ({ decision: 'allow' as const }))
+  }
+  const check = ($: Engine, tool: string) => $.tool.check({ tool, input: {} })
+
+  test('Proves C2: the hidden tool is denied, the reason naming mcpHidden', { options: { mcpHidden: 'fake' } }, async ($, on) => {
+    engineVerdict(on)
+    const verdict = await check($, ECHO.name)
+    expect(verdict.decision).toBe('deny')
+    expect(verdict.reason).toContain('mcpHidden')
+  })
+
+  test('Proves C2: another server and a codemode-mode tool keep the engine verdict', { options: { mcpHidden: 'fake', mcpCodemode: 'codes' } }, async ($, on) => {
+    engineVerdict(on)
+    expect((await check($, ELSEWHERE.name)).decision).toBe('allow')
+    expect((await check($, 'mcp__codes__run')).decision).toBe('allow')
+  })
+
+  test('Proves C2: with no options every verdict is the engine verdict', async ($, on) => {
+    engineVerdict(on)
+    expect((await check($, ECHO.name)).decision).toBe('allow')
+  })
+
+  test('Proves C1: a failing lower check denies another tool without blaming the hidden setting', { options: { mcpHidden: 'fake' } }, async ($, on) => {
+    on('tool.check', () => {
+      throw new Error('engine down')
+    })
+    const other = await check($, ELSEWHERE.name)
+    expect(other.decision).toBe('deny')
+    expect(other.reason).not.toContain('mcpHidden')
+    expect(other.reason).not.toContain('hidden')
+    const hidden = await check($, ECHO.name)
+    expect(hidden.decision).toBe('deny')
+    expect(hidden.reason).toContain('mcpHidden')
+  })
+})
+
+describe('the hidden mode, script side', () => {
+  const HIDDEN_ECHO = { options: { mcpHidden: 'fake__echo' } }
+
+  test('Proves C3: the sections omit the hidden tool and keep another', HIDDEN_ECHO, async ($, on) => {
+    const registered = standInRegistration(on, () => [ECHO, OTHER_FAKE])
+    await startSession($)
+    expect(registered[0]?.code).not.toContain('mcp__fake__echo')
+    expect(registered[0]?.code).toContain('### `mcp__fake__other`')
+  })
+
+  test('Proves C3: the tool list handed to the child omits the hidden tool', HIDDEN_ECHO, async ($, on) => {
+    standInMcp(on, [ECHO, OTHER_FAKE])
+    const stand = standIn(on, { pieces: [listening, done('ok')] })
+    await callCodemode($)
+    expect(spawnedMcpTools(stand)).toEqual([{ name: OTHER_FAKE.name, description: OTHER_FAKE.description }])
+  })
+
+  test('Proves C3: a script call of the hidden tool is refused and the server never runs', HIDDEN_ECHO, async ($, on) => {
+    const mcp = standInMcp(on, [ECHO, OTHER_FAKE])
+    const stand = standIn(on, { pieces: [listening, call(1, ECHO.name, { text: 'hi' }), { waitForPosts: 1 }, done('caught')] })
+    await callCodemode($)
+    expect(stand.posts[0]?.body.ok).toBe(false)
+    expect(mcp.inputs).toEqual([])
+  })
+
+  test('Proves C3: with no options the sections keep every tool', async ($, on) => {
+    const registered = standInRegistration(on, () => [ECHO, OTHER_FAKE])
+    await startSession($)
+    expect(registered[0]?.code).toContain('### `mcp__fake__echo`')
+    expect(registered[0]?.code).toContain('### `mcp__fake__other`')
+  })
+
+  test('Proves C3: with no options the child gets every tool', async ($, on) => {
+    standInMcp(on, [ECHO, OTHER_FAKE])
+    const stand = standIn(on, { pieces: [listening, done('ok')] })
+    await callCodemode($)
+    expect(spawnedMcpTools(stand)).toHaveLength(2)
+  })
+})
+
+describe('the hidden mode, exposureSync', () => {
+  test('Proves C4: a hidden tool that connects invalidates both events; the same set does not', async () => {
+    const invalidated: string[] = []
+    const session = {
+      tool: { list: async () => [{ name: 'mcp__fake__echo', description: '', mcp: true } as never] },
+      ui: { invalidate: (event: string) => void invalidated.push(event) },
+    } as unknown as Parameters<ReturnType<typeof exposureSync>>[0]
+    const run = exposureSync(readExposure({ mcpHidden: 'fake' }))
+    await run(session)
+    expect(invalidated).toEqual(['prompt.attachment', 'tool.describe'])
+    await run(session)
+    expect(invalidated).toHaveLength(2)
   })
 })

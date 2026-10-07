@@ -77,45 +77,82 @@ type Describe = { readonly description: string; readonly isDeferred?: boolean }
 /** The describe answer a tool's mode asks for; a mode the plugin does not set keeps the engine's answer. */
 function describeAnswer<A extends Describe>(exposure: Exposure, tool: string, answer: A): A {
   const mode = modeOf(exposure, tool)
-  if (mode === 'deferred') return { ...answer, isDeferred: true }
+  if (mode === 'deferred' || mode === 'hidden') return { ...answer, isDeferred: true }
   if (mode === 'direct') return { ...answer, isDeferred: false }
   if (mode !== 'codemode') return answer
   return { ...answer, description: `${callNote(tool)}\n\n${answer.description}`, isDeferred: true }
 }
 
-/** The attachment text without the codemode-mode tools, plus the instructions line on an instructions delta. */
-function attachmentText(text: string, type: string, group: readonly string[], names: readonly string[]): string {
-  const kept = withoutTools(text, group)
-  return type === 'mcp_instructions_delta' ? `${kept}\n\n${instructionsLine(group, names)}` : kept
+const inHidden = (exposure: Exposure, names: readonly string[]): string[] =>
+  names.filter(name => modeOf(exposure, name) === 'hidden')
+
+/** The tools with the hidden ones left out; what the codemode description and the scripts may see. */
+export function withoutHidden<T extends { readonly name: string }>(exposure: Exposure, tools: readonly T[]): T[] {
+  return tools.filter(tool => modeOf(exposure, tool.name) !== 'hidden')
 }
 
-/** Hides the codemode-mode MCP tools from the model outside the codemode tool; a script still calls them. */
+/**
+ * The attachment text without the codemode-mode and hidden tools; the instructions line
+ * is added on an instructions delta and names the codemode-mode tools only.
+ */
+function attachmentText(
+  text: string,
+  type: string,
+  groups: { readonly codemode: readonly string[]; readonly hidden: readonly string[] },
+  names: readonly string[],
+): string {
+  const kept = withoutTools(text, [...groups.codemode, ...groups.hidden])
+  if (type !== 'mcp_instructions_delta' || groups.codemode.length === 0) return kept
+  return `${kept}\n\n${instructionsLine(groups.codemode, names)}`
+}
+
+const hiddenReason = (tool: string): string =>
+  `${tool} is hidden by the codemode plugin's settings (mcpHidden); no call to it runs.`
+
+/** The refusal when the check itself failed: every tool is denied, and only a hidden one is told why. */
+const failedCheckVerdict = (exposure: Exposure, tool: string) => ({
+  decision: 'deny' as const,
+  reason:
+    modeOf(exposure, tool) === 'hidden'
+      ? hiddenReason(tool)
+      : `The codemode plugin's permission check failed, so the call to ${tool} is refused.`,
+})
+
+/** Hides the codemode-mode MCP tools from the model outside the codemode tool, and refuses the hidden ones everywhere. */
 export function registerExposure(on: On, exposure: Exposure): void {
   on('tool.describe', async (_$, e, next) => describeAnswer(exposure, e.tool, await next(e))).catch((_$, e, next) =>
     next(e),
   )
+
+  on('tool.check', (_$, e, next) =>
+    modeOf(exposure, e.tool) === 'hidden' ? { decision: 'deny' as const, reason: hiddenReason(e.tool) } : next(e),
+  ).catch((_$, e) => failedCheckVerdict(exposure, e.tool))
 
   on('prompt.attachment', async ($, e, next) => {
     const answer = await next(e)
     if (answer.text === null) return answer
     const names = await connected($)
     if (names === undefined) return answer
-    const group = inCodemode(exposure, names)
-    if (group.length === 0) return answer
-    return { ...answer, text: attachmentText(answer.text, e.type, group, names) }
+    const groups = { codemode: inCodemode(exposure, names), hidden: inHidden(exposure, names) }
+    if (groups.codemode.length + groups.hidden.length === 0) return answer
+    return { ...answer, text: attachmentText(answer.text, e.type, groups, names) }
   }).catch((_$, e, next) => next(e))
 }
+
+/** One string for the two sets; a blank line separates them, which no tool name holds. */
+const groupsKey = (codemode: readonly string[], hidden: readonly string[]): string =>
+  `${[...codemode].sort().join('\n')}\n\n${[...hidden].sort().join('\n')}`
 
 /**
  * The turn-start check: the engine caches the two answers `registerExposure` rewrites for the session,
  * so a codemode-mode tool that connects later needs them asked again.
  */
 export function exposureSync(exposure: Exposure): (session: Session) => Promise<void> {
-  let seen = ''
+  let seen = groupsKey([], [])
   return async session => {
     const names = await connected(session)
     if (names === undefined) return
-    const now = inCodemode(exposure, names).sort().join('\n')
+    const now = groupsKey(inCodemode(exposure, names), inHidden(exposure, names))
     if (now === seen) return
     seen = now
     session.ui.invalidate('prompt.attachment')

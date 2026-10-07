@@ -6,7 +6,6 @@
 * [0002 — A codemode script calls Write, Edit, Glob, Grep and the session's MCP tools through the bridge](0002-a-codemode-script-calls-write-edit-glob-grep-and-the-session-s-mcp-tools-through-the-bridge.md) - open
 * [0003 — The transcript draws a codemode call as its highlighted script, its nested calls live, and a summary](0003-the-transcript-draws-a-codemode-call-as-its-highlighted-script-its-nested-calls-live-and-a-summary.md) - open
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
-* [0011 — Each MCP server takes one of Pi's four exposure modes from the plugin settings, and an unset server keeps Claude Code's default](0011-each-mcp-server-takes-one-of-pi-s-four-exposure-modes-from-the-plugin-settings-and-an-unset-server-keeps-claude-code-s-default.md) - open
 * [0012 — A codemode result over a size budget returns its head and tail to the model and keeps the whole output in a file](0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md) - open
 
 ## Closed
@@ -17,3 +16,4 @@
 * [0008 — The description teaches idempotent writes and targeted search, and the failure ledger marks read-only calls](0008-the-description-teaches-idempotent-writes-and-targeted-search-and-the-failure-ledger-marks-read-only-calls.md) - closed
 * [0009 — A script receives an MCP tool's structured result, typed from its output schema](0009-a-script-receives-an-mcp-tool-s-structured-result-typed-from-its-output-schema.md) - closed
 * [0010 — A script reads the session's MCP resources through the resource tools](0010-a-script-reads-the-session-s-mcp-resources-through-the-resource-tools.md) - closed
+* [0011 — Each MCP server takes one of Pi's four exposure modes from the plugin settings, and an unset server keeps Claude Code's default](0011-each-mcp-server-takes-one-of-pi-s-four-exposure-modes-from-the-plugin-settings-and-an-unset-server-keeps-claude-code-s-default.md) - closed

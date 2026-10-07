@@ -2,7 +2,7 @@
 type: Issue
 title: Each MCP server takes one of Pi's four exposure modes from the plugin settings, and an unset server keeps Claude Code's default
 description: Pi's codemode, deferred, direct and hidden modes per MCP server, set in settings.json pluginConfigs; a server with no mode behaves as Claude Code does today.
-status: open
+status: closed
 timestamp: 2026-10-07T17:11:16Z
 ---
 

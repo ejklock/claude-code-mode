@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DESCRIPTION_CAP,
+  SECTIONS_BUDGET,
   codeDescription,
   describeCodemode,
   mcpSection,
@@ -57,6 +58,15 @@ const CODE_SNAPSHOT = [
   '',
   '### `Edit`',
   'Replaces text in a file. `tools.Edit(args)` takes `file_path` (absolute path), `old_string`, `new_string`, optional `replace_all` (every match), and resolves to a confirmation.',
+  '',
+  '### `ListMcpResourcesTool`',
+  'Lists the resources MCP servers offer. `tools.ListMcpResourcesTool(args)` takes optional `server` (server name), and resolves to the resources, each with its uri, name and server.',
+  '',
+  '### `ReadMcpResourceTool`',
+  'Reads an MCP resource. `tools.ReadMcpResourceTool(args)` takes `server` (server name), `uri`, and resolves to the resource text.',
+  '',
+  '### `ReadMcpResourceDirTool`',
+  'Lists the resources under an MCP resource directory. `tools.ReadMcpResourceDirTool(args)` takes `server` (server name), `uri`, and resolves to the resources under it.',
 ].join('\n')
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -266,7 +276,31 @@ describe('the sandbox declares Write and Edit as the build types them', () => {
   })
 })
 
+describe('the sandbox declares the MCP resource tools as the build types them', () => {
+  const shape = (name: 'ListMcpResourcesTool' | 'ReadMcpResourceTool' | 'ReadMcpResourceDirTool') => {
+    const { inputSchema, outputSchema } = declarationOf(name)
+    const properties = inputSchema.properties as Record<string, { type: string }>
+    return { names: Object.keys(properties), types: Object.values(properties).map(property => property.type), required: inputSchema.required, outputSchema }
+  }
+
+  it('Proves C1: ListMcpResourcesTool takes an optional server string', () => {
+    assert.deepEqual(shape('ListMcpResourcesTool'), { names: ['server'], types: ['string'], required: [], outputSchema: { type: 'string' } })
+  })
+
+  for (const name of ['ReadMcpResourceTool', 'ReadMcpResourceDirTool'] as const) {
+    it(`Proves C1: ${name} requires a server and a uri, both strings, so a missing uri is reported`, () => {
+      assert.deepEqual(shape(name), { names: ['server', 'uri'], types: ['string', 'string'], required: ['server', 'uri'], outputSchema: { type: 'string' } })
+    })
+  }
+})
+
 describe('the description holds to the cap', () => {
+  it('Proves C2: the sections of all seven built-ins fit the sections budget', () => {
+    const text = codeDescription()
+    assert.equal([...text.matchAll(/^### `(\w+)`$/gm)].length, EXPOSED_TOOLS.length)
+    assert.ok(Math.ceil(text.length / 4) <= SECTIONS_BUDGET, `sections are ${text.length} characters`)
+  })
+
   const sectionNames = (text: string): string[] => [...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1] ?? '')
   const manyTools = Array.from({ length: 200 }, (_, index) => ({ name: `mcp__s__t${index}`, description: 'd'.repeat(400) }))
 
@@ -351,9 +385,10 @@ describe('the sections fit a budget in estimated tokens', () => {
     assert.doesNotMatch(codeDescription([], []), /Nested tools:/)
   })
 
-  it('Proves C1: the real four built-ins are all shown and none is marked unlisted', () => {
+  it('Proves C1: the real seven built-ins are all shown and none is marked unlisted', () => {
     const text = codeDescription()
-    assert.deepEqual([...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1]), ['Read', 'Bash', 'Write', 'Edit'])
+    assert.deepEqual([...EXPOSED_TOOLS], ['Read', 'Bash', 'Write', 'Edit', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool'])
+    assert.deepEqual([...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1]), [...EXPOSED_TOOLS])
     assert.doesNotMatch(text, /not listed/)
   })
 })
@@ -406,7 +441,7 @@ describe('the model-facing description keeps its text', () => {
     assert.equal(describeCodemode(), DESCRIPTION_SNAPSHOT)
   })
 
-  it('Proves C2: the code parameter description with the four built-ins is byte-identical to the snapshot', () => {
+  it('Proves C2: the code parameter description with the seven built-ins is byte-identical to the snapshot', () => {
     assert.equal(codeDescription(), CODE_SNAPSHOT)
   })
 })

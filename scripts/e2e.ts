@@ -138,6 +138,10 @@ const MCP_CONFIGS = {
   none: { mcpServers: {} },
 }
 
+const BETA_URI = 'fake://notes/beta'
+const BETA_TEXT = 'beta-note-text-second'
+const ALPHA_TEXT = 'alpha-note-text-first'
+
 const LISTS_MCP_TOOL = `text('LISTED: ' + ALL_TOOLS.some(tool => tool.name === '${MCP_TOOL}'))`
 
 const SCENARIOS: Scenario[] = [
@@ -270,6 +274,34 @@ const SCENARIOS: Scenario[] = [
     checks: text => [
       ['mcp absent: ALL_TOOLS does not list the tool', text.includes('LISTED: false')],
       ['mcp absent: the call failed in the script', text.includes('ABSENT:') && !text.includes('NOT-ABSENT')],
+    ],
+  },
+  {
+    name: 'mcp resources allowed',
+    rules: { permissions: { allow: [TOOL, 'ListMcpResourcesTool', 'ReadMcpResourceTool'] } },
+    mcp: 'fake',
+    script: () =>
+      [
+        `const listing = await tools.ListMcpResourcesTool({})`,
+        `if (!listing.includes(${JSON.stringify(BETA_URI)})) throw new Error('beta is not listed')`,
+        `text('RESOURCE: ' + await tools.ReadMcpResourceTool({ server: 'fake', uri: ${JSON.stringify(BETA_URI)} }))`,
+      ].join('\n'),
+    checks: text => [
+      ['mcp resources allowed: the script listed the resources and read beta', text.includes('RESOURCE:') && text.includes(BETA_TEXT)],
+      ['mcp resources allowed: alpha text never reached the output', !text.includes(ALPHA_TEXT)],
+    ],
+  },
+  {
+    name: 'mcp resources denied',
+    rules: { permissions: { allow: [TOOL, 'ListMcpResourcesTool'], deny: ['ReadMcpResourceTool'] } },
+    mcp: 'fake',
+    script: () =>
+      [
+        `try { text('NOT-DENIED: ' + await tools.ReadMcpResourceTool({ server: 'fake', uri: ${JSON.stringify(BETA_URI)} })) } catch (e) { text('DENIAL: ' + e.message) }`,
+      ].join('\n'),
+    checks: text => [
+      ['mcp resources denied: the read failed inside the script', text.includes('DENIAL:') && !text.includes('NOT-DENIED')],
+      ['mcp resources denied: beta text never appeared', !text.includes(BETA_TEXT)],
     ],
   },
 ]

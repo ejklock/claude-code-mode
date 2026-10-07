@@ -4,7 +4,15 @@
  */
 
 /** The tools a script may call; the child declares them and the mod refuses others. */
-export const EXPOSED_TOOLS = ['Read', 'Bash', 'Write', 'Edit'] as const
+export const EXPOSED_TOOLS = [
+  'Read',
+  'Bash',
+  'Write',
+  'Edit',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
+  'ReadMcpResourceDirTool',
+] as const
 
 export type ExposedTool = (typeof EXPOSED_TOOLS)[number]
 
@@ -65,6 +73,32 @@ export const TOOL_SPECS: Record<ExposedTool, ToolSpec> = {
       old_string: { type: 'string', isRequired: true, sandboxNote: 'The text to replace.' },
       new_string: { type: 'string', isRequired: true, sandboxNote: 'The replacement text.' },
       replace_all: { type: 'boolean', isRequired: false, note: 'every match', sandboxNote: 'Replace every match, not only the first.' },
+    },
+  },
+  ListMcpResourcesTool: {
+    sandboxDescription: 'Lists the resources MCP servers offer; resolves to the list.',
+    summary: 'Lists the resources MCP servers offer.',
+    resolves: 'the resources, each with its uri, name and server',
+    args: {
+      server: { type: 'string', isRequired: false, note: 'server name', sandboxNote: 'Only this MCP server.' },
+    },
+  },
+  ReadMcpResourceTool: {
+    sandboxDescription: 'Reads an MCP resource; resolves to its text.',
+    summary: 'Reads an MCP resource.',
+    resolves: 'the resource text',
+    args: {
+      server: { type: 'string', isRequired: true, note: 'server name', sandboxNote: 'Name of the MCP server.' },
+      uri: { type: 'string', isRequired: true, sandboxNote: 'The resource uri.' },
+    },
+  },
+  ReadMcpResourceDirTool: {
+    sandboxDescription: 'Lists the resources under an MCP resource directory; resolves to the list.',
+    summary: 'Lists the resources under an MCP resource directory.',
+    resolves: 'the resources under it',
+    args: {
+      server: { type: 'string', isRequired: true, note: 'server name', sandboxNote: 'Name of the MCP server.' },
+      uri: { type: 'string', isRequired: true, sandboxNote: 'The directory uri.' },
     },
   },
 }

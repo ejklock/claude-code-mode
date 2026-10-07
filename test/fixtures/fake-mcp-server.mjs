@@ -1,5 +1,5 @@
-// A stand-in MCP server for the end-to-end run: stdio, newline-delimited JSON-RPC, an `echo` tool
-// and a `create_record` tool that fails once, on its fourth call, and logs every call to a ledger file.
+// A stand-in MCP server for the end-to-end run: stdio, newline-delimited JSON-RPC, two text resources,
+// an `echo` tool and a `create_record` tool that fails once, on its fourth call, and logs every call to a ledger file.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
@@ -9,6 +9,11 @@ let creates = 0
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`)
 
 const LOST = process.env.FAKE_LOST_ANSWER
+
+const RESOURCES = [
+  { uri: 'fake://notes/alpha', name: 'alpha', mimeType: 'text/plain', text: 'alpha-note-text-first' },
+  { uri: 'fake://notes/beta', name: 'beta', mimeType: 'text/plain', text: 'beta-note-text-second' },
+]
 
 function listRecords(id) {
   const ledger = process.env.FAKE_LEDGER
@@ -45,10 +50,20 @@ function handle({ id, method, params }) {
       id,
       result: {
         protocolVersion: params?.protocolVersion ?? '2025-06-18',
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: 'fake', version: '1.0.0' },
       },
     })
+  }
+  if (method === 'resources/list') {
+    const resources = RESOURCES.map(({ uri, name, mimeType }) => ({ uri, name, mimeType }))
+    return send({ jsonrpc: '2.0', id, result: { resources } })
+  }
+  if (method === 'resources/read') {
+    const found = RESOURCES.find(resource => resource.uri === params?.uri)
+    if (found === undefined) return send({ jsonrpc: '2.0', id, error: { code: -32002, message: `no resource ${params?.uri}` } })
+    const contents = [{ uri: found.uri, mimeType: found.mimeType, text: found.text }]
+    return send({ jsonrpc: '2.0', id, result: { contents } })
   }
   if (method === 'tools/list') {
     const inputSchema = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }

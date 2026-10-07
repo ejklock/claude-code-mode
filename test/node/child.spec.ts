@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -286,5 +286,38 @@ describe('the run request parser reads MCP tools defensively', () => {
       lines.map(line => parseChildMessage(line)),
       [{ type: 'done', ok: false, error: 'the run request on standard input is malformed', output: '' }],
     )
+  })
+})
+
+describe('the codemode child keeps its output within the budget', () => {
+  const marked = /whole output is in (\S+output\.txt)/
+
+  /** Reads the file a marker names, then removes its folder so the run leaves nothing behind. */
+  function spilledText(output: string): string {
+    const path = marked.exec(output)?.[1]
+    assert.ok(path, `no marker in the output: ${output.slice(0, 200)}`)
+    const text = readFileSync(path, 'utf8')
+    rmSync(dirname(path), { recursive: true })
+    return text
+  }
+
+  it('Proves C3: an ok run printing 30,000 characters is cut and the whole output is in the named file', async () => {
+    const outcome = await runChild(`text('x'.repeat(30000))`, answerByTool)
+    assert.equal(outcome.done.ok, true)
+    assert.ok(outcome.done.output.length < 21_000)
+    assert.equal(spilledText(outcome.done.output), 'x'.repeat(30_000))
+  })
+
+  it('Proves C3: a failed run printing 30,000 characters is cut the same way', async () => {
+    const outcome = await runChild(`text('y'.repeat(30000)); throw new Error('after the output')`, answerByTool)
+    assert.equal(outcome.done.ok, false)
+    assert.ok(outcome.done.output.length < 21_000)
+    assert.equal(spilledText(outcome.done.output), 'y'.repeat(30_000))
+  })
+
+  it('Proves C3: a run printing 100 characters returns them unchanged and names no file', async () => {
+    const outcome = await runChild(`text('z'.repeat(100))`, answerByTool)
+    assert.equal(outcome.done.output, 'z'.repeat(100))
+    assert.doesNotMatch(outcome.done.output, marked)
   })
 })

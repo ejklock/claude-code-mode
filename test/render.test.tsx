@@ -804,3 +804,124 @@ describe('a known viewport fills the width the transcript gives', () => {
     }
   })
 })
+
+describe('the result line cap', () => {
+  const lines = (count: number, trailing = ''): string =>
+    Array.from({ length: count }, (_, n) => `line ${n + 1}`).join('\n') + trailing
+  const head = (count: number): string => lines(Math.min(count, 10))
+
+  const mountResult = ($: Engine, surface: (typeof SURFACES)[number], id: string, output: string, isErrored: boolean) =>
+    $.ui.mount({
+      plugin: 'codemode',
+      surface,
+      component: 'ToolResult',
+      props: { tool_use_id: id, tool: CODEMODE, output, isErrored },
+      requestId: id,
+    })
+
+  const successCases: [string, string, string, string | undefined][] = [
+    ['an empty output', '', '', undefined],
+    ['exactly 10 lines', lines(10), lines(10), undefined],
+    ['10 lines and a trailing newline', lines(10, '\n'), lines(10, '\n'), undefined],
+    ['11 lines', lines(11), head(11), '… 1 more line'],
+    ['500 lines', lines(500), head(500), '… 490 more lines'],
+  ]
+
+  for (const [name, output, shown, more] of successCases) {
+    test(`Proves C1: ${name}`, async ($, on) => {
+      host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+      for (const surface of SURFACES) {
+        const ui = await mountResult($, surface, 'toolu_seed', output, false)
+        expect((await ui.find({ key: 'output' }))?.text).toBe(shown)
+        expect((await ui.find({ key: 'more' }))?.text).toBe(more)
+        await ui.unmount()
+      }
+    })
+  }
+
+  test('Proves C1: a kept line wider than the box still ends in an ellipsis', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]], 80)])
+    const wide = ['o'.repeat(150), ...Array.from({ length: 11 }, () => 'x')].join('\n')
+    for (const surface of SURFACES) {
+      const ui = await mountResult($, surface, 'toolu_seed', wide, false)
+      const text = (await ui.find({ key: 'output' }))?.text ?? ''
+      expect(text.split('\n')[0]).toBe(`${'o'.repeat(79)}…`)
+      expect((await ui.find({ key: 'more' }))?.text).toBe('… 2 more lines')
+      await ui.unmount()
+    }
+  })
+
+  test('Proves C2: a 30-line error draws its first 10 lines and the count left out', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+    for (const surface of SURFACES) {
+      const ui = await mountResult($, surface, 'toolu_seed', lines(30), true)
+      expect((await ui.find({ key: 'error' }))?.text).toBe(`✗ ${head(30)}`)
+      expect((await ui.find({ key: 'more' }))?.text).toBe('… 20 more lines')
+      await ui.unmount()
+    }
+  })
+
+  test('Proves C2: a 3-line error draws all 3 and no extra line', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+    for (const surface of SURFACES) {
+      const ui = await mountResult($, surface, 'toolu_seed', lines(3), true)
+      expect((await ui.find({ key: 'error' }))?.text).toBe(`✗ ${lines(3)}`)
+      expect(await ui.find({ key: 'more' })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('Proves C3: without a known width a 50-line output is still capped', async ($, on) => {
+    host(on)
+    for (const surface of SURFACES) {
+      const ui = await mountResult($, surface, 'toolu_gone', lines(50), false)
+      expect((await ui.find({ key: 'output' }))?.text).toBe(head(50))
+      expect((await ui.find({ key: 'more' }))?.text).toBe('… 40 more lines')
+      await ui.unmount()
+    }
+  })
+})
+
+describe('the result line cap, the more line', () => {
+  const lines = (count: number): string => Array.from({ length: count }, (_, n) => `line ${n + 1}`).join('\n')
+
+  const mountAt = ($: Engine, surface: (typeof SURFACES)[number], id: string, isErrored: boolean, columns?: number) =>
+    $.ui.mount({
+      plugin: 'codemode',
+      surface,
+      component: 'ToolResult',
+      props: { tool_use_id: id, tool: CODEMODE, output: lines(500), isErrored },
+      requestId: id,
+      ...(columns === undefined ? {} : { viewport: { columns, rows: 40 } }),
+    })
+
+  const widths: [string, string, number | undefined, string][] = [
+    ['a narrow box cuts it to the width', 'toolu_seed', 12, '… 490 m…'],
+    ['a wide box keeps it whole', 'toolu_seed', 84, '… 490 more lines'],
+    ['no known width keeps it whole', 'toolu_gone', undefined, '… 490 more lines'],
+  ]
+  for (const [name, id, columns, expected] of widths) {
+    test(`Proves C4: ${name}`, async ($, on) => {
+      host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+      for (const surface of SURFACES) {
+        for (const isErrored of [false, true]) {
+          const ui = await mountAt($, surface, id, isErrored, columns)
+          expect((await ui.find({ key: 'more' }))?.text).toBe(expected)
+          await ui.unmount()
+        }
+      }
+    })
+  }
+
+  test('Proves C5: the more line is dim on the success and the errored box', async ($, on) => {
+    host(on).seed([seededRun([['Bash', 'pwd', 'done', 5]])])
+    for (const surface of SURFACES) {
+      for (const isErrored of [false, true]) {
+        const ui = await mountAt($, surface, 'toolu_seed', isErrored)
+        const more = await ui.find({ type: 'Text', text: '… 490 more lines' })
+        expect(more?.props.dimColor).toBe(true)
+        await ui.unmount()
+      }
+    }
+  })
+})

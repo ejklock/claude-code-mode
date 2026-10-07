@@ -21,6 +21,8 @@ const WIDTH_CAP = 100
 const FRAME = 4
 /** The narrowest content a measured surface gets; a box on a viewport under FRAME + this overflows it. */
 const MIN_CONTENT = 4
+/** The most output lines a result box draws; the model still receives the whole output. */
+const RESULT_LINES = 10
 const ZERO_WIDTH: [number, number][] = [
   [0x300, 0x36f],
   [0x200b, 0x200f],
@@ -150,6 +152,18 @@ function cutLines(text: string, width: number): string {
     .join('\n')
 }
 
+/** The text to draw and how many lines it leaves out; one trailing newline is not a line, and a text within the cap is returned whole. */
+function capLines(text: string): { shown: string; hidden: number } {
+  const lines = text.split('\n')
+  const count = lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+  if (count <= RESULT_LINES) return { shown: text, hidden: 0 }
+  return { shown: lines.slice(0, RESULT_LINES).join('\n'), hidden: count - RESULT_LINES }
+}
+
+function moreLine(hidden: number): string {
+  return `… ${hidden} more ${hidden === 1 ? 'line' : 'lines'}`
+}
+
 async function runOf($: StateDollar, id: string): Promise<CodemodeRun | undefined> {
   return (await read($, RUNS)).find(run => run.id === id)
 }
@@ -218,6 +232,8 @@ export const registerRender: Register = on => {
     const width = resultWidth(run, e.viewport?.columns)
     const fit = (text: string): string => (width === undefined ? text : cutLines(text, width))
     const boxWidth = width === undefined ? {} : { width: width + FRAME }
+    const { shown, hidden } = capLines(output)
+    const more = hidden > 0 ? <Box key="more"><Text dimColor>{fit(moreLine(hidden))}</Text></Box> : null
 
     if (e.props.isErrored) {
       return (
@@ -232,8 +248,9 @@ export const registerRender: Register = on => {
           paddingX={1}
         >
           <Box key="error">
-            <Text color="error">{fit(`✗ ${output}`)}</Text>
+            <Text color="error">{fit(`✗ ${shown}`)}</Text>
           </Box>
+          {more}
         </Box>
       )
     }
@@ -256,8 +273,9 @@ export const registerRender: Register = on => {
           <Text>{` ${run === undefined ? 'done' : summaryOf(run)}`}</Text>
         </Box>
         <Box key="output">
-          <Text>{fit(output)}</Text>
+          <Text>{fit(shown)}</Text>
         </Box>
+        {more}
       </Box>
     )
   }).catch(($, e, next) => next(e))

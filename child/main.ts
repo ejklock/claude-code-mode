@@ -1,11 +1,12 @@
 import { CodemodeSandbox } from '@earendil-works/pi-codemode'
 import type { CodemodeResult, CodemodeTool } from '@earendil-works/pi-codemode'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { OUTPUT_BUDGET, withinBudget } from '../shared/budget.ts'
 import {
   ANSWER_PATH,
   EXPOSED_TOOLS,
@@ -88,6 +89,13 @@ function outputText(result: CodemodeResult): string {
   return result.output.flatMap(item => (item.type === 'text' ? [item.text] : [])).join('\n')
 }
 
+/** A folder of its own per run, so two runs never share or overwrite a file. */
+function spillToFile(whole: string): string {
+  const path = join(mkdtempSync(join(tmpdir(), 'codemode-output-')), 'output.txt')
+  writeFileSync(path, whole, 'utf8')
+  return path
+}
+
 class CodemodeChild {
   async run(): Promise<void> {
     const request = parseRunRequest(await readStdin())
@@ -128,7 +136,7 @@ class CodemodeChild {
   }
 
   private closing(result: CodemodeResult): ChildMessage {
-    const output = outputText(result)
+    const output = withinBudget(outputText(result), OUTPUT_BUDGET, spillToFile)
     return result.ok
       ? { type: 'done', ok: true, output }
       : { type: 'done', ok: false, error: result.error.message, output }

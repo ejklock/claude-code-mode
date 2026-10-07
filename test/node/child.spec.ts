@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { ANSWER_PATH, parseChildMessage, parseRunRequest } from '../../shared/protocol.ts'
+import { ANSWER_PATH, EXPOSED_TOOLS, parseChildMessage, parseRunRequest } from '../../shared/protocol.ts'
 import type { CallAnswer, ChildMessage, McpTool, RunRequest } from '../../shared/protocol.ts'
 
 const CHILD = join(dirname(fileURLToPath(import.meta.url)), '../../child/main.ts')
@@ -234,15 +234,15 @@ describe("the codemode child declares the run request's MCP tools", () => {
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: ALL_TOOLS lists the MCP tools beside the four built-ins', async () => {
+  it('Proves C1: ALL_TOOLS lists the MCP tools beside the seven built-ins', async () => {
     const outcome = await runWithMcpTools(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, FAKE_TOOLS)
-    assert.deepEqual(JSON.parse(outcome.done.output), ['Read', 'Bash', 'Write', 'Edit', 'mcp__fake__echo', 'mcp__fake_srv__ping'])
+    assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS, 'mcp__fake__echo', 'mcp__fake_srv__ping'])
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: a run request with no MCP tools declares the four built-ins only', async () => {
+  it('Proves C1: a run request with no MCP tools declares the seven built-ins only', async () => {
     const outcome = await runChild(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, answerByTool)
-    assert.deepEqual(JSON.parse(outcome.done.output), ['Read', 'Bash', 'Write', 'Edit'])
+    assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS])
     assertCleanExit(outcome)
   })
 

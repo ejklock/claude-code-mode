@@ -308,6 +308,57 @@ describe('Write and Edit nested calls', () => {
   })
 })
 
+describe('MCP resource nested calls', () => {
+  const readInput = { server: 'fake', uri: 'fake://notes/beta' }
+
+  test('Proves C2: ReadMcpResourceTool reaches the host with its arguments and its text comes back to the script', async ($, on) => {
+    const seen: Record<string, unknown>[] = []
+    on('tool.call', { tool: 'ReadMcpResourceTool' }, (_$, e) => {
+      seen.push({ ...e })
+      return { result: 'unused', text: 'beta text' }
+    })
+    const stand = standIn(on, { pieces: [listening, call(1, 'ReadMcpResourceTool', readInput), { waitForPosts: 1 }, done('ok')] })
+    await callCodemode($)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ tool: 'ReadMcpResourceTool', ...readInput })
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'beta text' })
+  })
+
+  test('Proves C1: ReadMcpResourceDirTool reaches the host with its arguments and its text comes back to the script', async ($, on) => {
+    const seen: Record<string, unknown>[] = []
+    on('tool.call', { tool: 'ReadMcpResourceDirTool' }, (_$, e) => {
+      seen.push({ ...e })
+      return { result: 'unused', text: 'dir text' }
+    })
+    const dirInput = { server: 'fake', uri: 'fake://notes/' }
+    const stand = standIn(on, { pieces: [listening, call(1, 'ReadMcpResourceDirTool', dirInput), { waitForPosts: 1 }, done('ok')] })
+    await callCodemode($)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ tool: 'ReadMcpResourceDirTool', ...dirInput })
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'dir text' })
+  })
+
+  test('Proves C1: ListMcpResourcesTool without a server reaches the host with no server argument and its text comes back', async ($, on) => {
+    const seen: Record<string, unknown>[] = []
+    on('tool.call', { tool: 'ListMcpResourcesTool' }, (_$, e) => {
+      seen.push({ ...e })
+      return { result: 'unused', text: 'list text' }
+    })
+    const stand = standIn(on, { pieces: [listening, call(1, 'ListMcpResourcesTool', {}), { waitForPosts: 1 }, done('ok')] })
+    await callCodemode($)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ tool: 'ListMcpResourcesTool' })
+    expect(seen[0]).not.toHaveProperty('server')
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'list text' })
+  })
+
+  test('Proves C2: a tool that is neither exposed nor an MCP name is still refused', async ($, on) => {
+    const stand = standIn(on, { pieces: [listening, call(1, 'ReadMcpResourceToolX', readInput), { waitForPosts: 1 }, done('caught')] })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'tool ReadMcpResourceToolX is not available to codemode scripts' })
+  })
+})
+
 type Listed = { name: string; description: string; mcp: boolean }
 
 const ECHO: Listed = { name: 'mcp__fake__echo', description: 'Echoes text.', mcp: true }

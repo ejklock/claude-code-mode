@@ -39,6 +39,8 @@ The same tasks, with and without the plugin ([`node scripts/savings.ts`](scripts
 
 Where many reads batch into one script, codemode cut the turns to less than a third, the output tokens to ~60% and the cost to ~60%, and the wall time fell with the turns (7.7 s against 11.9 s). On the write task the turns fell a quarter but tokens and cost were level. On the single `git grep` — where codemode should not help — the model never used it (0 of 3 runs) and called `Bash` directly; that row's differences are run-to-run noise, not a saving or a cost of the tool. Input tokens are near zero on both sides because the context rides the prompt cache; the codemode tool's own schema (~430 tokens) is inside the with-side numbers. Ranges, method and the honest caveats are in [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md); with 3 runs per side, only the large differences above are claimed.
 
+When a script fails, the result also lists the nested calls that already ran (`#<id> <tool> <args> — <state>: <detail>`), so a retry redoes only what did not. A call that threw, or never answered, is marked `unknown` rather than `failed`: it may have taken effect, so check before redoing it. In headless checks ([`node scripts/partial.ts`](scripts/partial.ts), 3 runs, a store whose create tool fails once, and with `--task ambiguous` one whose fourth create is stored but never answered) the model duplicated no write, before or after the change, so no saving is claimed; see [issue 0006](docs/issues/0006-a-failed-codemode-script-reports-which-nested-calls-already-ran-so-a-retry-does-not-repeat-side-effects.md).
+
 **Read more:** Earendil's [Pi codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) and ["You Said No MCP!"](https://earendil.com/posts/you-said-no-mcp/); Armin Ronacher's ["What is Codemode"](https://lucumr.pocoo.org/2026/10/6/codemode/); [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/); [Anthropic's Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp).
 
 ## Why code mode
@@ -140,6 +142,7 @@ claude plugin test .       # the mod's side, with a stand-in child
 npm test                   # the real child on a real socket, and invariants
 npm run typecheck
 node scripts/e2e.ts        # headless end to end with claude -p (spends model tokens)
+node scripts/partial.ts --runs 3  # duplicated writes after a failed script, headless (spends model tokens)
 ```
 
 `npm test` and the end-to-end run open a Unix socket, so run them outside a sandbox that blocks socket `listen()`.

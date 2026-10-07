@@ -3,6 +3,7 @@ import type { Register, ToolInfo } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
 import { GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
+import { exposureSync, registerExposure } from './expose.ts'
 import { readExposure } from './exposure.ts'
 import { registerRender } from './render.tsx'
 import { CODEMODE_TOOL_ID } from '../shared/protocol.ts'
@@ -37,9 +38,11 @@ async function readCodeText(list: ListTools): Promise<string | undefined> {
 }
 
 export const register: Register = (on, options) => {
-  // Read first so a bad setting fails the load; the hooks of the exposure modes use it.
-  const _exposure = readExposure(options)
+  // Read first so a bad setting fails the load.
+  const exposure = readExposure(options)
   registerRender(on, options)
+  registerExposure(on, exposure)
+  const syncExposure = exposureSync(exposure)
   // Lost on a hot reload, which costs one more registration of the same text.
   let registeredText: string | undefined
 
@@ -54,6 +57,7 @@ export const register: Register = (on, options) => {
   // MCP servers may connect or change after the session starts; the prompt cache
   // is spent only when the rendered sections differ from the last registered.
   on('turn.start', async ($, e, next) => {
+    await syncExposure({ tool: { list: () => $.tool.list() }, ui: { invalidate: event => $.ui.invalidate(event) } })
     const codeText = await readCodeText(() => $.tool.list())
     if (codeText !== undefined && codeText !== registeredText) {
       await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: inputSchemaWith(codeText) })

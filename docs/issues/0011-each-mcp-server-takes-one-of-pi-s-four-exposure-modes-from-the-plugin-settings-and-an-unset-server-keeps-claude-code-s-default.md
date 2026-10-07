@@ -89,8 +89,19 @@ Settled for the build, cheap to reverse: when two patterns from different lists 
 
 The 4-of-5 criterion is met, but the control does not tell the mode's effect apart: with the mod installed, the model already reaches the stand-in tool through codemode, even for one call, so there is no direct call for the mode to prevent. The probe's direct call came from a real server whose instructions tell the model to call a tool first (Claude Docs `guide`); a measure that shows the mode's effect needs a server like that. Confirmed by the owner, 2026-10-07: recorded as is.
 
+### Subagent view
+
+2026-10-07, same build and model, headless runs outside the Bash sandbox on the stand-in server. The prompt told the main model to delegate the echo of "alpha" to a general-purpose subagent, and to have the subagent list every `mcp__` tool it sees.
+
+| Mode | The subagent's own `mcp__` tools | How it reached the echo | `ALL_TOOLS` in its script |
+|---|---|---|---|
+| `mcpCodemode: fake` | `mcp__codemode__codemode` only; no `mcp__fake__*` among its deferred tools | a codemode script, `fake-echo: alpha` | the three `mcp__fake__*` tools |
+| none (control) | `mcp__codemode__codemode`, plus the three `mcp__fake__*` as deferred tools in a system reminder | a codemode script, `fake-echo: alpha` | the three `mcp__fake__*` tools |
+
+So the mode's hooks reach a subagent too: it gets the same filtered attachment and the same deferred answer as the main model, and it reaches the tool through codemode. Limits: one run each; in both runs the main model's prompt to the subagent named codemode as a way in, so the runs do not show what a subagent does when nobody points it there; a subagent's `tool.check` origin was not observed.
+
 ### Plan
 
 1. Read Pi's four modes from its source and record each one's meaning here. Done 2026-10-07, in Scope.
 2. The `userConfig` fields (slice 1 done 2026-10-07: `hooks/exposure.ts` › `readExposure`, `modeOf`; tests in `test/node/exposure.spec.ts` and `test/codemode.test.ts`), then the `codemode` mode (slice 2 done 2026-10-07: `hooks/expose.ts` › `registerExposure`, `exposureSync`; the null-text guard in its `prompt.attachment` hook has no test, because the plugin kit never hands a hook a null text, so a test of it cannot fail) from the four probe hooks, then the other three modes (slice 3, `deferred` and `direct`, done 2026-10-07; slice 4, `hidden`, done 2026-10-07: `hooks/expose.ts` › `failedCheckVerdict`, `withoutHidden`), each with red-first tests in the plugin kit and an e2e scenario on the stand-in server.
-3. The adoption run of [issue 0004](/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md), with an MCP prompt, for the 4-of-5 criterion, plus control runs of the same prompt with no mode set, since the e2e scenario "mcp codemode mode" alone cannot show the model would otherwise call the tool directly; then the subagent case. The measure is done on the stand-in server (see Adoption measure); the subagent case is open.
+3. The adoption run of [issue 0004](/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md), with an MCP prompt, for the 4-of-5 criterion, plus control runs of the same prompt with no mode set, since the e2e scenario "mcp codemode mode" alone cannot show the model would otherwise call the tool directly; then the subagent case. The measure is done on the stand-in server (see Adoption measure); the subagent case is recorded (see Subagent view).

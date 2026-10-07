@@ -3,7 +3,7 @@ import type { Register, ToolInfo } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
 import { GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
-import { exposureSync, registerExposure } from './expose.ts'
+import { exposureSync, registerExposure, withoutHidden } from './expose.ts'
 import { readExposure } from './exposure.ts'
 import { registerRender } from './render.tsx'
 import { CODEMODE_TOOL_ID } from '../shared/protocol.ts'
@@ -43,12 +43,13 @@ export const register: Register = (on, options) => {
   registerRender(on, options)
   registerExposure(on, exposure)
   const syncExposure = exposureSync(exposure)
+  const visibleTools = async (list: ListTools): Promise<ToolInfo[]> => withoutHidden(exposure, await list())
   // Lost on a hot reload, which costs one more registration of the same text.
   let registeredText: string | undefined
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    const codeText = (await readCodeText(() => $.tool.list())) ?? codeDescription()
+    const codeText = (await readCodeText(() => visibleTools(() => $.tool.list()))) ?? codeDescription()
     await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: inputSchemaWith(codeText) })
     registeredText = codeText
     return started
@@ -58,7 +59,7 @@ export const register: Register = (on, options) => {
   // is spent only when the rendered sections differ from the last registered.
   on('turn.start', async ($, e, next) => {
     await syncExposure({ tool: { list: () => $.tool.list() }, ui: { invalidate: event => $.ui.invalidate(event) } })
-    const codeText = await readCodeText(() => $.tool.list())
+    const codeText = await readCodeText(() => visibleTools(() => $.tool.list()))
     if (codeText !== undefined && codeText !== registeredText) {
       await $.tool.register({ name: TOOL_NAME, description: describeCodemode(), inputSchema: inputSchemaWith(codeText) })
       registeredText = codeText
@@ -83,7 +84,7 @@ export const register: Register = (on, options) => {
         pluginRoot: $.plugin.root,
         spawn: request => $.process.spawn(request),
         callTool: input => $.tool.call(input),
-        listTools: () => $.tool.list(),
+        listTools: () => visibleTools(() => $.tool.list()),
         post: (url, init) => $.http.fetch(url, init),
         publish: async change => {
           await update($, RUNS, change)

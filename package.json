@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.hooks.json && tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/node/child.spec.ts test/node/invariants.spec.ts test/node/overhead.spec.ts test/node/savings.spec.ts"
+    "test": "node --test test/node/child.spec.ts test/node/invariants.spec.ts test/node/overhead.spec.ts test/node/partial.spec.ts test/node/savings.spec.ts"
   },
   "dependencies": {
     "@earendil-works/pi-codemode": "1.0.4"

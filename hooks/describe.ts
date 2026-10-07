@@ -42,6 +42,9 @@ const INTRO = [
   'Runs JavaScript that calls other tools. The input is raw JavaScript (not JSON, no code fence), run as an async function body in a sandbox: top-level `await` works. No Node, file system, network, or timers.',
   '- `await tools.<name>({ ...args })` resolves to the tool\'s text and rejects with an Error when the call fails or a permission rule refuses it; catch it to continue.',
   '- Only what the script prints comes back, so filter and combine results in the script.',
+  '- A failed run lists the nested calls that already ran, so a retry redoes only what did not.',
+  '- A call marked unknown may have taken effect: read the current state before redoing it.',
+  "- A script with writes prints each step as it completes, catches each item's failure apart, and passes an idempotency key when a tool takes one.",
 ].join('\n')
 
 const GLOBALS = [

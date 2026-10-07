@@ -36,11 +36,14 @@ export const RUN_LIMIT = 20
 export const CALL_LIMIT = 100
 const LABEL_CHARS = 80
 const REASON_CHARS = 120
+const ARGS_CHARS = 80
 
 type Settled = {
   answer: CallAnswer
   state: Exclude<CodemodeCallState, 'running'>
   reason?: string
+  /** Ledger only: the call may have taken effect though no answer says so; the transcript state stays as it is. */
+  unknown?: true
 }
 
 // Built from strings so the source holds no raw control character. CSI and OSC
@@ -143,6 +146,66 @@ class RunTracker {
   }
 }
 
+type LedgerEntry = {
+  id: number
+  tool: string
+  args: string
+  state: CodemodeCallState
+  detail: string
+  unknown: boolean
+}
+
+const LEDGER_HEADING = 'Nested calls before the failure:'
+
+function detailOf(settled: Settled): string {
+  const text = settled.answer.ok ? settled.answer.text : (settled.reason ?? '')
+  return firstLine(text, REASON_CHARS)
+}
+
+const MAY_HAVE_RUN = '(it may have taken effect; check before redoing it)'
+
+function renderEntry(entry: LedgerEntry): string {
+  const unknown = entry.unknown || entry.state === 'running'
+  const detail = entry.state === 'running' ? 'no answer' : entry.detail
+  const state = unknown ? 'unknown' : entry.state
+  const text = detail === '' ? state : `${state}: ${detail}`
+  return `#${entry.id} ${entry.tool} ${entry.args} — ${unknown ? `${text} ${MAY_HAVE_RUN}` : text}`
+}
+
+function renderOmitted(omitted: number): string[] {
+  if (omitted === 0) return []
+  return [`(${omitted} earlier ${omitted === 1 ? 'call' : 'calls'} left out)`]
+}
+
+/**
+ * What the model reads after a failure: the nested calls that already ran.
+ * It lives in the run state, apart from the published progress, which may fail.
+ */
+export class CallLedger {
+  private entries: LedgerEntry[] = []
+  private omitted = 0
+
+  begin(call: CallMessage): void {
+    const args = firstLine(JSON.stringify(call.input), ARGS_CHARS)
+    this.entries.push({ id: call.id, tool: call.tool, args, state: 'running', detail: '', unknown: false })
+    const dropped = Math.max(0, this.entries.length - CALL_LIMIT)
+    this.entries = this.entries.slice(dropped)
+    this.omitted += dropped
+  }
+
+  settle(id: number, settled: Settled): void {
+    this.entries = this.entries.map(entry =>
+      entry.id === id ? { ...entry, state: settled.state, detail: detailOf(settled), unknown: settled.unknown === true } : entry,
+    )
+  }
+
+  /** The section to append to a failure's text; empty when no call was made. */
+  render(): string {
+    if (this.entries.length === 0) return ''
+    return [LEDGER_HEADING, ...renderOmitted(this.omitted), ...this.entries.map(renderEntry)].join('\n')
+  }
+}
+
 export type CodemodeOutcome = { ok: true; output: string } | { ok: false; error: string }
 
 type CallMessage = Extract<ChildMessage, { type: 'call' }>
@@ -160,6 +223,7 @@ type RunState = {
   aborted: Promise<void>
   abort: () => void
   tracker: RunTracker
+  ledger: CallLedger
 }
 
 function newRunState(tracker: RunTracker, mcpNames: ReadonlySet<string>): RunState {
@@ -177,6 +241,7 @@ function newRunState(tracker: RunTracker, mcpNames: ReadonlySet<string>): RunSta
     aborted,
     abort,
     tracker,
+    ledger: new CallLedger(),
   }
 }
 
@@ -284,8 +349,10 @@ export class CodemodeBridge {
   }
 
   private async serve(call: CallMessage, socketPath: string, state: RunState): Promise<void> {
+    state.ledger.begin(call)
     await state.tracker.startCall(call)
     const settled = await this.execute(call, state.mcpNames)
+    state.ledger.settle(call.id, settled)
     await state.tracker.settleCall(call.id, settled)
     try {
       await this.host.post(`http://bridge${ANSWER_PATH}`, {
@@ -320,25 +387,36 @@ export class CodemodeBridge {
       if (result.isError === true) return failed(result.text ?? `${call.tool} failed`)
       return { answer: { id: call.id, ok: true, text: result.text ?? '' }, state: 'done' }
     } catch (error) {
-      return failed(errorMessage(error))
+      return thrownOutcome(call.id, error)
     }
   }
 
   private outcome(state: RunState, exit: string): CodemodeOutcome {
-    if (state.problem !== undefined) return { ok: false, error: state.problem }
-    if (state.closing?.ok === true) return { ok: true, output: state.closing.output }
-    if (state.closing !== undefined) {
+    if (state.problem === undefined && state.closing?.ok === true) return { ok: true, output: state.closing.output }
+    return { ok: false, error: withLedger(this.failure(state, exit), state.ledger) }
+  }
+
+  private failure(state: RunState, exit: string): string {
+    if (state.problem !== undefined) return state.problem
+    if (state.closing?.ok === false) {
       const printed = state.closing.output === '' ? '' : `\n\nOutput before the failure:\n${state.closing.output}`
-      return { ok: false, error: `${state.closing.error}${printed}` }
+      return `${state.closing.error}${printed}`
     }
     const stderr = state.stderr.trim() === '' ? '' : `\n${state.stderr.trim()}`
-    return {
-      ok: false,
-      error: `the codemode child ${exit} without a closing line${stderr}`,
-    }
+    return `the codemode child ${exit} without a closing line${stderr}`
   }
+}
+
+function withLedger(text: string, ledger: CallLedger): string {
+  const section = ledger.render()
+  return section === '' ? text : `${text}\n\n${section}`
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+export function thrownOutcome(id: number, error: unknown): Settled {
+  const reason = errorMessage(error)
+  return { answer: { id, ok: false, error: reason }, state: 'failed', reason, unknown: true }
 }

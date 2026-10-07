@@ -93,6 +93,17 @@ function standInFileTools(on: On): { inputs: Record<string, unknown>[] } {
   return stand
 }
 
+/** Stands in for `$.state`; the returned reader gives the latest value stored. */
+function standInState(on: On): () => unknown {
+  let held: { value: unknown; version: number } = { value: undefined, version: 0 }
+  on('state.get', () => ({ value: held }))
+  on('state.set', (_$, e) => {
+    held = { value: e.value, version: held.version + 1 }
+    return { value: { isSet: true as const, version: held.version } }
+  })
+  return () => held.value
+}
+
 function denyWrite(on: On): void {
   on('classic.PreToolUse', ($, e, next) =>
     e.tool === 'Write' ? { deny: 'Write is denied by a permission rule' } : next(e),
@@ -284,19 +295,14 @@ describe('Write and Edit nested calls', () => {
   })
 
   test('Proves C2: the live call row is labelled with the file path in full', async ($, on) => {
-    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
-    on('state.get', () => ({ value: held }))
-    on('state.set', (_$, e) => {
-      held = { value: e.value, version: held.version + 1 }
-      return { value: { isSet: true as const, version: held.version } }
-    })
+    const stored = standInState(on)
     mock.clock(on, { now: 1_000 })
     standInFileTools(on)
     standIn(on, {
       pieces: [listening, call(1, 'Write', writeInput), { waitForPosts: 1 }, done('ok')],
     })
     await callCodemode($)
-    const runs = held.value as { calls: { tool: string; label: string }[] }[]
+    const runs = stored() as { calls: { tool: string; label: string }[] }[]
     expect(runs[0]?.calls.map(row => [row.tool, row.label])).toEqual([['Write', '/work/a.txt']])
   })
 })
@@ -528,17 +534,12 @@ describe('an answer that cannot be delivered', () => {
 
 describe('the width a run publishes', () => {
   test('Proves P2: a run carries the length of its longest script line', async ($, on) => {
-    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
-    on('state.get', () => ({ value: held }))
-    on('state.set', (_$, e) => {
-      held = { value: e.value, version: held.version + 1 }
-      return { value: { isSet: true as const, version: held.version } }
-    })
+    const stored = standInState(on)
     mock.clock(on, { now: 1_000 })
     standIn(on, { pieces: [listening, done('ok')] })
 
     await $.tool.call({ tool: CODEMODE, code: 'short\nthe longest line here\nmid line' })
-    const runs = held.value as { scriptWidth?: number }[]
+    const runs = stored() as { scriptWidth?: number }[]
     expect(runs[0]?.scriptWidth).toBe('the longest line here'.length)
   })
 })
@@ -975,19 +976,14 @@ describe('a failed run tells a failed call from one with an unknown outcome', ()
   })
 
   test('Proves C1: the transcript state of a thrown call stays failed and the answer to the script is unchanged', async ($, on) => {
-    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
-    on('state.get', () => ({ value: held }))
-    on('state.set', (_$, e) => {
-      held = { value: e.value, version: held.version + 1 }
-      return { value: { isSet: true as const, version: held.version } }
-    })
+    const stored = standInState(on)
     mock.clock(on, { now: 1_000 })
     standInThrowingEdit(on, new Error('connection reset'))
     const stand = standIn(on, { pieces: [listening, call(1, 'Edit', edit), { waitForPosts: 1 }, done('caught')] })
     const reply = await callCodemode($)
     expect(reply).toEqual({ result: 'caught' })
     expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'no implementation for tool.call' })
-    const runs = held.value as { calls: { state: string; reason?: string }[] }[]
+    const runs = stored() as { calls: { state: string; reason?: string }[] }[]
     expect(runs[0]?.calls.map(row => [row.state, row.reason])).toEqual([['failed', 'no implementation for tool.call']])
   })
 })

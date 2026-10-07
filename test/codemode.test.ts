@@ -3,6 +3,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { CALL_LIMIT, CallLedger, CodemodeBridge, thrownOutcome } from '../hooks/bridge.ts'
+import { exposureSync } from '../hooks/expose.ts'
+import { readExposure } from '../hooks/exposure.ts'
 import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
 import type { ToolDoc } from '../hooks/describe.ts'
 import { ANSWER_PATH, EXPOSED_TOOLS } from '../shared/protocol.ts'
@@ -1194,4 +1196,183 @@ describe('the exposure settings as /plugin configure stores them', () => {
       await expect($.session.start({ cwd: '/work', surface: null, isInteractive: false })).rejects.toThrow('codegraph')
     },
   )
+})
+
+const OTHER_FAKE: Listed = { name: 'mcp__fake__other', description: 'Another.', mcp: true }
+const ELSEWHERE: Listed = { name: 'mcp__other__x', description: 'Elsewhere.', mcp: true }
+const ENGINE_TEXT = 'the engine text'
+
+const engineAttachments = (on: On, listed: Listed[]): void => {
+  on('tool.list', () => ({ value: listed }))
+  on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: e.isDeferred ?? (true as const) }))
+  on('prompt.attachment', (_$, e) => ({ text: e.text }))
+}
+
+const describeTool = ($: Engine, tool: string) =>
+  $.tool.describe({ tool, description: ENGINE_TEXT, provider: ENGINE_ORIGIN })
+
+const attach = ($: Engine, type: 'deferred_tools_delta' | 'mcp_instructions_delta', text: string | null) =>
+  $.prompt.attachment({ type, text, origin: { kind: 'engine' } } as Parameters<Engine['prompt']['attachment']>[0])
+
+describe('the codemode mode, tool.describe', () => {
+  test(
+    'Proves C1: a codemode-mode tool is answered deferred with the call note ahead of the engine text',
+    { options: { mcpCodemode: 'fake' } },
+    async ($, on) => {
+      engineAttachments(on, [ECHO])
+      const answer = await describeTool($, ECHO.name)
+      expect(answer.isDeferred).toBe(true)
+      const [note, blank, ...rest] = answer.description.split('\n')
+      expect(note).toContain('tools.mcp__fake__echo(args)')
+      expect(note).toContain('codemode')
+      expect(note).not.toMatch(/not called directly|refused|denied|cannot|do not/i)
+      expect(blank).toBe('')
+      expect(rest.join('\n')).toBe(ENGINE_TEXT)
+    },
+  )
+
+  test('Proves C1: a tool with no mode, and the codemode tool, keep the engine answer', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO, ELSEWHERE])
+    expect(await describeTool($, ELSEWHERE.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+    const own = await describeTool($, CODEMODE)
+    expect(own.isDeferred).toBe(false)
+    expect(own.description).toBe(describeCodemode())
+  })
+
+  test('Proves C1: with no options the engine answer stands', async ($, on) => {
+    engineAttachments(on, [ECHO])
+    expect(await describeTool($, ECHO.name)).toEqual({ description: ENGINE_TEXT, isDeferred: true })
+  })
+})
+
+describe('the codemode mode, attachment lines', () => {
+  const fnLine = (name: string) => `<function>{"description":"d","name":"${name}","parameters":{}}</function>`
+
+  test('Proves C2: the deferred list loses the codemode-mode name only', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO, ELSEWHERE])
+    const text = ['mcp__fake__echo', 'mcp__other__x', 'Read'].join('\n')
+    expect((await attach($, 'deferred_tools_delta', text)).text).toBe('mcp__other__x\nRead')
+  })
+
+  test('Proves C2: the always-loaded block loses the codemode-mode function line only', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO, ELSEWHERE])
+    const text = [fnLine('mcp__fake__echo'), fnLine('mcp__other__x')].join('\n')
+    expect((await attach($, 'deferred_tools_delta', text)).text).toBe(fnLine('mcp__other__x'))
+  })
+
+  test('Proves C2: prose that mentions the name stays', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO])
+    const text = 'use mcp__fake__echo when asked\nmcp__fake__echo'
+    expect((await attach($, 'deferred_tools_delta', text)).text).toBe('use mcp__fake__echo when asked')
+  })
+
+  test('Proves C2: with no options every text is unchanged', async ($, on) => {
+    engineAttachments(on, [ECHO])
+    const text = 'mcp__fake__echo\nRead'
+    expect((await attach($, 'deferred_tools_delta', text)).text).toBe(text)
+  })
+})
+
+describe('the codemode mode, instructions line', () => {
+  test('Proves C3: one blank line and one line naming the server wildcard are appended', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO, OTHER_FAKE])
+    const text = (await attach($, 'mcp_instructions_delta', '## fake\nUse echo.')).text ?? ''
+    const lines = text.split('\n')
+    expect(lines.slice(0, 2)).toEqual(['## fake', 'Use echo.'])
+    expect(lines).toHaveLength(4)
+    expect(lines[2]).toBe('')
+    expect(lines[3]).toContain('mcp__fake__*')
+    expect(lines[3]).toContain('tools.')
+  })
+
+  test('Proves C3: a partly listed server is named tool by tool', { options: { mcpCodemode: 'fake__echo' } }, async ($, on) => {
+    engineAttachments(on, [ECHO, OTHER_FAKE])
+    const added = ((await attach($, 'mcp_instructions_delta', 'x')).text ?? '').split('\n').at(-1) ?? ''
+    expect(added).toContain('mcp__fake__echo')
+    expect(added).not.toContain('mcp__fake__*')
+  })
+
+  test('Proves C3: with no options the text is unchanged', async ($, on) => {
+    engineAttachments(on, [ECHO])
+    expect((await attach($, 'mcp_instructions_delta', 'x')).text).toBe('x')
+  })
+
+  test('Proves C3: no connected tool in codemode mode leaves the text', { options: { mcpCodemode: 'gone' } }, async ($, on) => {
+    engineAttachments(on, [ECHO])
+    expect((await attach($, 'mcp_instructions_delta', 'x')).text).toBe('x')
+  })
+})
+
+describe('the codemode mode, instructions filter', () => {
+  test('Proves C6: the bare name line goes, the prose stays, then the blank line and the instructions line', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO])
+    const text = (await attach($, 'mcp_instructions_delta', 'mcp__fake__echo\nuse the tool well')).text ?? ''
+    const lines = text.split('\n')
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).toBe('use the tool well')
+    expect(lines[1]).toBe('')
+    expect(lines[2]).toContain('mcp__fake__*')
+  })
+
+})
+
+describe('the codemode mode, exposureSync', () => {
+  const fixture = (names: () => string[], fail = false) => {
+    const invalidated: string[] = []
+    const session = {
+      tool: {
+        list: async () => {
+          if (fail) throw new Error('list failed')
+          return names().map(name => ({ name, description: '', mcp: true }) as never)
+        },
+      },
+      ui: { invalidate: (event: string) => void invalidated.push(event) },
+    }
+    return { invalidated, session: session as Parameters<ReturnType<typeof exposureSync>>[0] }
+  }
+  const sync = () => exposureSync(readExposure({ mcpCodemode: 'fake' }))
+
+  test('Proves C7: a changed codemode-mode set invalidates both events once; the same set does not', async () => {
+    let names = ['mcp__fake__echo']
+    const { invalidated, session } = fixture(() => names)
+    const run = sync()
+    await run(session)
+    expect(invalidated).toEqual(['prompt.attachment', 'tool.describe'])
+    await run(session)
+    expect(invalidated).toHaveLength(2)
+    names = ['mcp__fake__echo', 'mcp__fake__other']
+    await run(session)
+    expect(invalidated).toHaveLength(4)
+    names = ['mcp__fake__other']
+    await run(session)
+    expect(invalidated).toHaveLength(6)
+    expect(invalidated.slice(2, 4)).toEqual(['prompt.attachment', 'tool.describe'])
+  })
+
+  test('Proves C7: with no codemode-mode tool ever connected nothing invalidates, the first empty turn included', async () => {
+    const { invalidated, session } = fixture(() => ['mcp__other__x'])
+    const run = sync()
+    await run(session)
+    await run(session)
+    expect(invalidated).toEqual([])
+  })
+
+  test('Proves C7: the set becoming empty again invalidates both events once', async () => {
+    let names = ['mcp__fake__echo']
+    const { invalidated, session } = fixture(() => names)
+    const run = sync()
+    await run(session)
+    expect(invalidated).toHaveLength(2)
+    names = []
+    await run(session)
+    expect(invalidated).toEqual(['prompt.attachment', 'tool.describe', 'prompt.attachment', 'tool.describe'])
+    await run(session)
+    expect(invalidated).toHaveLength(4)
+  })
+
+  test('Proves C7: a rejecting tool list resolves without invalidating', async () => {
+    const { invalidated, session } = fixture(() => [], true)
+    await expect(sync()(session)).resolves.toBeUndefined()
+    expect(invalidated).toEqual([])
+  })
 })

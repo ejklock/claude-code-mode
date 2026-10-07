@@ -119,7 +119,10 @@ type Scenario = {
   seed?: string
   /** A request in words, in place of the prompt that hands the model the script. */
   ask?: string
-  checks: (text: string, file: string, code: string) => Check[]
+  /** The plugin's settings for this run, written under `pluginConfigs`. */
+  options?: Record<string, string>
+  /** `calls` holds the name of every tool_use block of the run, in order. */
+  checks: (text: string, file: string, code: string, calls: string[]) => Check[]
 }
 
 const read = (file: string): string | undefined => (existsSync(file) ? readFileSync(file, 'utf8') : undefined)
@@ -263,6 +266,20 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'mcp codemode mode',
+    rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
+    mcp: 'fake',
+    options: { mcpCodemode: 'fake' },
+    ask: [
+      'Get the fake echo of the text e2e-ping-31 and reply with the echo\'s answer verbatim.',
+    ].join('\n'),
+    script: () => '',
+    checks: (text, _file, _code, calls) => [
+      ['mcp codemode mode: the result holds the server answer', text.includes('fake-echo: e2e-ping-31')],
+      ['mcp codemode mode: the model never called the echo tool directly', !calls.includes(MCP_TOOL)],
+    ],
+  },
+  {
     name: 'mcp absent',
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'none',
@@ -314,12 +331,23 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   if (scenario.seed !== undefined) writeFileSync(file, scenario.seed)
   const settingsFile = join(folder, 'settings.json')
   // The session's ambient default mode may allow writes, so each scenario names the stock one.
-  writeFileSync(settingsFile, JSON.stringify({ permissions: { defaultMode: 'default', ...scenario.rules.permissions } }))
+  const pluginConfigs = scenario.options === undefined ? {} : { pluginConfigs: { codemode: { options: scenario.options } } }
+  writeFileSync(
+    settingsFile,
+    JSON.stringify({ permissions: { defaultMode: 'default', ...scenario.rules.permissions }, ...pluginConfigs }),
+  )
   const mcpConfig = scenario.mcp === undefined ? undefined : join(folder, 'mcp.json')
   if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
   const run = runClaude({ settingsFile, prompt: scenario.ask ?? promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
   const { called, text, code } = codemodeResult(run.events)
-  const checks: Check[] = [[`${scenario.name}: the codemode tool was called`, called], ...scenario.checks(text, file, code)]
+  const calls = run.events
+    .flatMap(blocks)
+    .filter(block => block.type === 'tool_use')
+    .map(block => block.name ?? '')
+  const checks: Check[] = [
+    [`${scenario.name}: the codemode tool was called`, called],
+    ...scenario.checks(text, file, code, calls),
+  ]
   return { name: scenario.name, checks, run, text }
 }
 

@@ -2,10 +2,11 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { CALL_LIMIT, CallLedger, thrownOutcome } from '../hooks/bridge.ts'
+import { CALL_LIMIT, CallLedger, CodemodeBridge, thrownOutcome } from '../hooks/bridge.ts'
 import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
 import type { ToolDoc } from '../hooks/describe.ts'
 import { ANSWER_PATH, EXPOSED_TOOLS } from '../shared/protocol.ts'
+import type { CodemodeRun } from '../types/index.d.ts'
 
 const CODEMODE = 'mcp__codemode__codemode'
 const SOCKET = '/tmp/stand-in/bridge.sock'
@@ -1002,5 +1003,90 @@ describe('the codemode description on an unknown outcome', () => {
     expect(describeCodemode()).toContain(
       'A call marked unknown may have taken effect: read the current state before redoing it.',
     )
+  })
+})
+
+describe('a done nested call whose tool ran read-only', () => {
+  const settleDone = (text: string, readOnly: boolean): string => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: { file_path: '/a' } })
+    ledger.settle(1, { answer: { id: 1, ok: true, text }, state: 'done', ...(readOnly ? { readOnly: true as const } : {}) })
+    return ledger.render()
+  }
+
+  test('Proves C1: an empty answer renders as done (read-only)', () => {
+    expect(settleDone('', true)).toBe(`${SECTION}\n#1 Read {"file_path":"/a"} — done (read-only)`)
+  })
+
+  test('Proves C1: an answer renders the first line after the mark', () => {
+    expect(settleDone('first\nsecond', true)).toBe(`${SECTION}\n#1 Read {"file_path":"/a"} — done (read-only): first`)
+  })
+
+  test('Proves C1: a done call without the mark renders as before', () => {
+    expect(settleDone('first', false)).toBe(`${SECTION}\n#1 Read {"file_path":"/a"} — done: first`)
+  })
+
+  test('Proves C1: a failed call never carries the mark', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: {} })
+    ledger.settle(1, { answer: { id: 1, ok: false, error: 'bad' }, state: 'failed', reason: 'bad', readOnly: true })
+    expect(ledger.render()).toBe(`${SECTION}\n#1 Read {} — failed: bad`)
+  })
+
+  test('Proves C1: an unknown call that is also read-only renders as unknown with no mark', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: {} })
+    ledger.settle(1, { answer: { id: 1, ok: true, text: 'late' }, state: 'done', unknown: true, readOnly: true })
+    const text = ledger.render()
+    expect(text).toContain('#1 Read {} — unknown: late (it may have taken effect; check before redoing it)')
+    expect(text).not.toContain('(read-only)')
+  })
+
+  test('Proves C1: a call begun and never settled renders as unknown with no mark', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: {} })
+    const text = ledger.render()
+    expect(text).toContain('#1 Read {} — unknown: no answer (it may have taken effect; check before redoing it)')
+    expect(text).not.toContain('(read-only)')
+  })
+
+  test('Proves C1: through execute the mark shows in the ledger and the transcript state stays done', async () => {
+    let runs: CodemodeRun[] = []
+    const posted: number[] = []
+    let release = (): void => {}
+    const bothPosted = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const host = {
+      pluginRoot: '/plugin',
+      spawn: async function* () {
+        yield { stream: 'stdout' as const, text: listening }
+        yield { stream: 'stdout' as const, text: call(1, 'Read', { file_path: '/a' }) }
+        yield { stream: 'stdout' as const, text: call(2, 'Edit', { file_path: '/a', old_string: 'a', new_string: 'b' }) }
+        await bothPosted
+        yield { stream: 'stdout' as const, text: failedDone('boom') }
+        return { code: 0, signal: null }
+      },
+      callTool: async (input: { tool: string }) =>
+        input.tool === 'Read'
+          ? { result: 'unused', text: 'listing', isReadOnly: true as const }
+          : { result: 'unused', isError: true as const, text: 'disk full', isReadOnly: true as const },
+      listTools: async () => [],
+      post: async (_url: string, init: { body?: string }) => {
+        posted.push((JSON.parse(init.body ?? '{}') as { id: number }).id)
+        if (posted.length === 2) release()
+        return { status: 204, ok: true, headers: {}, text: '' }
+      },
+      publish: async (change: (current: CodemodeRun[]) => CodemodeRun[]) => {
+        runs = change(runs)
+      },
+      now: async () => 1_000,
+    }
+    const outcome = await new CodemodeBridge(host as never, 1_000).run('the script', 'run-1')
+    expect(outcome.ok).toBe(false)
+    const error = outcome.ok ? '' : outcome.error
+    expect(error).toContain('#1 Read {"file_path":"/a"} — done (read-only): listing')
+    expect(error).toContain('— failed: disk full')
+    expect(runs[0]?.calls.map(row => row.state)).toEqual(['done', 'failed'])
   })
 })

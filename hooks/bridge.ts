@@ -44,6 +44,8 @@ type Settled = {
   reason?: string
   /** Ledger only: the call may have taken effect though no answer says so; the transcript state stays as it is. */
   unknown?: true
+  /** Ledger only: the tool held the input read-only, so redoing the call is safe; set on done calls. */
+  readOnly?: true
 }
 
 // Built from strings so the source holds no raw control character. CSI and OSC
@@ -153,6 +155,7 @@ type LedgerEntry = {
   state: CodemodeCallState
   detail: string
   unknown: boolean
+  readOnly: boolean
 }
 
 const LEDGER_HEADING = 'Nested calls before the failure:'
@@ -167,7 +170,8 @@ const MAY_HAVE_RUN = '(it may have taken effect; check before redoing it)'
 function renderEntry(entry: LedgerEntry): string {
   const unknown = entry.unknown || entry.state === 'running'
   const detail = entry.state === 'running' ? 'no answer' : entry.detail
-  const state = unknown ? 'unknown' : entry.state
+  const marked = entry.readOnly && entry.state === 'done' && !unknown
+  const state = unknown ? 'unknown' : marked ? 'done (read-only)' : entry.state
   const text = detail === '' ? state : `${state}: ${detail}`
   return `#${entry.id} ${entry.tool} ${entry.args} — ${unknown ? `${text} ${MAY_HAVE_RUN}` : text}`
 }
@@ -187,7 +191,7 @@ export class CallLedger {
 
   begin(call: CallMessage): void {
     const args = firstLine(JSON.stringify(call.input), ARGS_CHARS)
-    this.entries.push({ id: call.id, tool: call.tool, args, state: 'running', detail: '', unknown: false })
+    this.entries.push({ id: call.id, tool: call.tool, args, state: 'running', detail: '', unknown: false, readOnly: false })
     const dropped = Math.max(0, this.entries.length - CALL_LIMIT)
     this.entries = this.entries.slice(dropped)
     this.omitted += dropped
@@ -195,7 +199,7 @@ export class CallLedger {
 
   settle(id: number, settled: Settled): void {
     this.entries = this.entries.map(entry =>
-      entry.id === id ? { ...entry, state: settled.state, detail: detailOf(settled), unknown: settled.unknown === true } : entry,
+      entry.id === id ? { ...entry, state: settled.state, detail: detailOf(settled), unknown: settled.unknown === true, readOnly: settled.readOnly === true } : entry,
     )
   }
 
@@ -385,7 +389,8 @@ export class CodemodeBridge {
       const result = await this.host.callTool({ ...input, tool: call.tool } as ToolCallArgs)
       if (result.deny !== undefined) return refused(result.deny)
       if (result.isError === true) return failed(result.text ?? `${call.tool} failed`)
-      return { answer: { id: call.id, ok: true, text: result.text ?? '' }, state: 'done' }
+      const answer = { id: call.id, ok: true as const, text: result.text ?? '' }
+      return result.isReadOnly === true ? { answer, state: 'done', readOnly: true } : { answer, state: 'done' }
     } catch (error) {
       return thrownOutcome(call.id, error)
     }

@@ -27,7 +27,11 @@ const DESCRIPTION_SNAPSHOT = [
   '- Only what the script prints comes back, so filter and combine results in the script.',
   '- A failed run lists the nested calls that already ran, so a retry redoes only what did not.',
   '- A call marked unknown may have taken effect: read the current state before redoing it.',
-  "- A script with writes prints each step as it completes, catches each item's failure apart, and passes an idempotency key when a tool takes one.",
+  '- A call marked read-only is safe to redo.',
+  "- A script with writes prints each step as it completes, catches each item's failure apart, and passes an idempotency key when a tool takes one, derived from the data, never at random.",
+  '- Prefer writes that are safe to repeat: overwrite, `mkdir -p`, upsert, check then act.',
+  '- To search, run `rg` or `git grep` through Bash, print only the matches, then read only the files that matter.',
+  '- Keep a handle a tool returns in a variable and pass it to the next call; never print it.',
   '',
   'Globals:',
   '- `text(value)` and `console.log(...)` add output; non-strings are JSON-stringified. A top-level `return` ends the script, and its value is not sent back.',
@@ -273,6 +277,16 @@ describe('the description holds to the cap', () => {
     assert.doesNotMatch(text, /Nested tools:/)
     assert.match(text, /no section there is still callable, and `ALL_TOOLS` is how to find it/)
     assert.match(text, /Connected MCP tools are callable too, as `tools\.<name>\(args\)`.*listed in `ALL_TOOLS`/)
+  })
+
+  it('Proves C2: the intro teaches repeatable writes, data-derived keys, targeted search, kept handles and the read-only mark', () => {
+    const text = describeCodemode()
+    assert.match(text, /Prefer writes that are safe to repeat: overwrite, `mkdir -p`, upsert, check then act/)
+    assert.match(text, /idempotency key when a tool takes one, derived from the data, never at random/)
+    assert.match(text, /`rg` or `git grep` through Bash, print only the matches, then read only the files that matter/)
+    assert.match(text, /Keep a handle a tool returns in a variable and pass it to the next call; never print it/)
+    assert.match(text, /A call marked read-only is safe to redo/)
+    assert.equal(text.match(/idempotency key/g)?.length, 1)
   })
 
   it('Proves C2: the sections, however many, never reach the description', () => {

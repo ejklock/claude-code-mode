@@ -2,7 +2,7 @@
 type: Issue
 title: The description teaches idempotent writes and targeted search, and the failure ledger marks read-only calls
 description: Adds description guidance for writes that are safe to repeat, data-derived idempotency keys and rg or git grep search, and marks a ledger entry read-only when the engine reports isReadOnly.
-status: open
+status: closed
 timestamp: 2026-10-07T03:43:54Z
 ---
 
@@ -28,3 +28,7 @@ The mod cannot make other tools idempotent. It can teach scripts to write in a w
 ### Plan
 
 One slice.
+
+### Results
+
+Shipped in one slice. A failed run's ledger renders a done call whose tool result carries `isReadOnly: true` as `done (read-only)`, or `done (read-only): detail`; failed, denied and unknown calls, the transcript rows and the published progress are unchanged. The `codemode` description now teaches writes that are safe to repeat, data-derived idempotency keys, targeted search through `rg` or `git grep`, and handles kept out of the output; it measures 1749 characters against the 2048 cap. `npm test` runs 120 and the kit test 133. The kit cannot make a handler return `isReadOnly` (core sets it), so the execute path is tested with a stand-in host that returns it. No live-model run was made, so no effect on duplicates is claimed.

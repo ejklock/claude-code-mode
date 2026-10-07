@@ -44,7 +44,11 @@ const INTRO = [
   '- Only what the script prints comes back, so filter and combine results in the script.',
   '- A failed run lists the nested calls that already ran, so a retry redoes only what did not.',
   '- A call marked unknown may have taken effect: read the current state before redoing it.',
-  "- A script with writes prints each step as it completes, catches each item's failure apart, and passes an idempotency key when a tool takes one.",
+  '- A call marked read-only is safe to redo.',
+  "- A script with writes prints each step as it completes, catches each item's failure apart, and passes an idempotency key when a tool takes one, derived from the data, never at random.",
+  '- Prefer writes that are safe to repeat: overwrite, `mkdir -p`, upsert, check then act.',
+  '- To search, run `rg` or `git grep` through Bash, print only the matches, then read only the files that matter.',
+  '- Keep a handle a tool returns in a variable and pass it to the next call; never print it.',
 ].join('\n')
 
 const GLOBALS = [

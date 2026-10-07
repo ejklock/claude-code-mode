@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { CALL_LIMIT, CallLedger, thrownOutcome } from '../hooks/bridge.ts'
 import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
 import type { ToolDoc } from '../hooks/describe.ts'
 import { ANSWER_PATH, EXPOSED_TOOLS } from '../shared/protocol.ts'
@@ -730,5 +731,280 @@ describe('the codemode guideline', () => {
     standInPrompt(on, engine)
     const { sections } = await composeFor($, ['Read', 'Bash'])
     expect(sections).toEqual(engine)
+  })
+})
+
+const SECTION = 'Nested calls before the failure:'
+const failedDone = (error: string, output = ''): string => line({ type: 'done', ok: false, error, output })
+const echoCall = (id: number, text: string): string => call(id, 'Bash', { command: `echo ${text}` })
+const echoLine = (id: number, text: string): string => `#${id} Bash {"command":"echo ${text}"} — done: ${text}`
+
+function standInFailingEdit(on: On, text: string): void {
+  on('tool.call', { tool: 'Edit' }, () => ({ result: 'unused', isError: true, text }))
+}
+
+describe('a failed run lists the nested calls that already ran', () => {
+  const edit = { file_path: '/work/a.txt', old_string: 'a', new_string: 'b' }
+
+  test('Proves C1: three done and a fourth failed are listed in call order after the error and the output', async ($, on) => {
+    standInFailingEdit(on, 'disk full\nsecond line')
+    standIn(on, {
+      pieces: [
+        listening,
+        echoCall(1, 'one'),
+        echoCall(2, 'two'),
+        echoCall(3, 'three'),
+        call(4, 'Edit', edit),
+        { waitForPosts: 4 },
+        failedDone('boom', 'partial'),
+      ],
+    })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(
+      [
+        'boom',
+        '',
+        'Output before the failure:',
+        'partial',
+        '',
+        SECTION,
+        echoLine(1, 'one'),
+        echoLine(2, 'two'),
+        echoLine(3, 'three'),
+        `#4 Edit ${JSON.stringify(edit)} — failed: disk full`,
+      ].join('\n'),
+    )
+  })
+
+  test('Proves C1: a denied call shows denied with its reason', async ($, on) => {
+    denyEchoDenied(on)
+    standIn(on, { pieces: [listening, echoCall(1, 'denied'), { waitForPosts: 1 }, failedDone('boom')] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(
+      `boom\n\n${SECTION}\n#1 Bash {"command":"echo denied"} — denied: Bash(echo denied) is denied by a permission rule`,
+    )
+  })
+
+  test('Proves C1: the arguments are cut to 80 characters and the detail to 120, both with an ellipsis', async ($, on) => {
+    const long = 'x'.repeat(300)
+    standIn(on, { pieces: [listening, echoCall(1, long), { waitForPosts: 1 }, failedDone('boom')] })
+    const reply = await callCodemode($)
+    const args = JSON.stringify({ command: `echo ${long}` })
+    const entry = `#1 Bash ${args.slice(0, 79)}… — done: ${'x'.repeat(119)}…`
+    expect(reply.deny).toBe(`boom\n\n${SECTION}\n${entry}`)
+  })
+
+  test('Proves C1: a failed run with no nested call has no section', async ($, on) => {
+    standIn(on, { pieces: [listening, failedDone('boom', 'partial')] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe('boom\n\nOutput before the failure:\npartial')
+  })
+
+  test('Proves C1: a call that has not answered renders as unknown with no answer, next to a done call', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: { file_path: '/a' } })
+    ledger.begin({ type: 'call', id: 2, tool: 'Bash', input: { command: 'ls' } })
+    ledger.settle(2, { answer: { id: 2, ok: true, text: '\u001b[31mred\u001b[0m\nsecond' }, state: 'done' })
+    expect(ledger.render()).toBe(
+      `${SECTION}\n#1 Read {"file_path":"/a"} — unknown: no answer (it may have taken effect; check before redoing it)\n#2 Bash {"command":"ls"} — done: red`,
+    )
+  })
+
+  test('Proves C2: exactly the call limit are all listed with no omission line', async ($, on) => {
+    standIn(on, {
+      pieces: [listening, ...Array.from({ length: CALL_LIMIT }, (_, i) => echoCall(i + 1, 'n')), { waitForPosts: CALL_LIMIT }, failedDone('boom')],
+    })
+    const reply = await callCodemode($)
+    expect(reply.deny).toContain(`${SECTION}\n${echoLine(1, 'n')}`)
+    expect(reply.deny).toContain(echoLine(CALL_LIMIT, 'n'))
+    expect(reply.deny).not.toContain('left out')
+  })
+
+  test('Proves C2: one call past the limit leaves the first out and says so', async ($, on) => {
+    const total = CALL_LIMIT + 1
+    standIn(on, {
+      pieces: [listening, ...Array.from({ length: total }, (_, i) => echoCall(i + 1, 'n')), { waitForPosts: total }, failedDone('boom')],
+    })
+    const reply = await callCodemode($)
+    expect(reply.deny).toContain(`${SECTION}\n(1 earlier call left out)\n${echoLine(2, 'n')}`)
+    expect(reply.deny).not.toContain(`\n${echoLine(1, 'n')}`)
+    expect(reply.deny).toContain(echoLine(total, 'n'))
+  })
+
+  test('Proves C2: five calls past the limit are counted in the plural', async ($, on) => {
+    const total = CALL_LIMIT + 5
+    standIn(on, {
+      pieces: [listening, ...Array.from({ length: total }, (_, i) => echoCall(i + 1, 'n')), { waitForPosts: total }, failedDone('boom')],
+    })
+    const reply = await callCodemode($)
+    expect(reply.deny).toContain(`${SECTION}\n(5 earlier calls left out)\n${echoLine(6, 'n')}`)
+  })
+
+  test('Proves C3: a malformed line after an answered call carries the section after its text', async ($, on) => {
+    standIn(on, { pieces: [listening, echoCall(1, 'a'), { waitForPosts: 1 }, 'this is not json\n'] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toContain('malformed line: this is not json')
+    expect(reply.deny).toMatch(/this is not json\n\nNested calls before the failure:\n#1 Bash/)
+    expect(reply.deny?.endsWith(echoLine(1, 'a'))).toBe(true)
+  })
+
+  test('Proves C3: a child that exits non-zero after an answered call carries the section after its stderr', async ($, on) => {
+    standIn(on, { pieces: [listening, echoCall(1, 'a'), { waitForPosts: 1 }], exit: 3, stderr: 'node: crashed' })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(`the codemode child exited with code 3 without a closing line\nnode: crashed\n\n${SECTION}\n${echoLine(1, 'a')}`)
+  })
+
+  test('Proves C3: a stream that ends without a closing line after an answered call carries the section', async ($, on) => {
+    standIn(on, { pieces: [listening, echoCall(1, 'a'), { waitForPosts: 1 }] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(`the codemode child exited with code 0 without a closing line\n\n${SECTION}\n${echoLine(1, 'a')}`)
+  })
+
+  test('Proves C3: a successful run has no section', async ($, on) => {
+    standIn(on, { pieces: SCRIPT_WITH_READ_AND_BASH })
+    const reply = await callCodemode($)
+    expect(reply).toEqual({ result: 'FIXTURE-CONTENT\ncodemode-ok' })
+  })
+
+  test('Proves C3: a state that cannot be published still lists every call', async ($, on) => {
+    on('state.get', () => {
+      throw new Error('the state is gone')
+    })
+    on('state.set', () => {
+      throw new Error('the state is gone')
+    })
+    mock.clock(on, { now: 1_000 })
+    standIn(on, { pieces: [listening, echoCall(1, 'a'), echoCall(2, 'b'), { waitForPosts: 2 }, failedDone('boom')] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(`boom\n\n${SECTION}\n${echoLine(1, 'a')}\n${echoLine(2, 'b')}`)
+  })
+})
+
+describe('the codemode description on a failed run', () => {
+  test('Proves C4: it says a failed run lists the calls that ran and how a script with writes fails safely', () => {
+    const text = describeCodemode()
+    expect(text).toContain('A failed run lists the nested calls that already ran, so a retry redoes only what did not.')
+    expect(text).toContain('prints each step as it completes')
+    expect(text).toContain("catches each item's failure apart")
+    expect(text).toContain('passes an idempotency key when a tool takes one')
+  })
+})
+
+const MAY_HAVE_RUN = '(it may have taken effect; check before redoing it)'
+
+function standInThrowingEdit(on: On, thrown: unknown): void {
+  on('tool.call', { tool: 'Edit' }, () => {
+    throw thrown
+  })
+}
+
+describe('a failed run tells a failed call from one with an unknown outcome', () => {
+  const edit = { file_path: '/work/a.txt', old_string: 'a', new_string: 'b' }
+  const editLine = (state: string): string => `#2 Edit ${JSON.stringify(edit)} — ${state}`
+  const failedRun = [listening, echoCall(1, 'one'), call(2, 'Edit', edit), { waitForPosts: 2 }, failedDone('boom')]
+
+  test('Proves C1: a call whose tool returned an error result stays failed', async ($, on) => {
+    standInFailingEdit(on, 'disk full')
+    standIn(on, { pieces: failedRun })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(`boom\n\n${SECTION}\n${echoLine(1, 'one')}\n${editLine('failed: disk full')}`)
+  })
+
+  test('Proves C1: a call whose tool threw is unknown in the run, with the engine message', async ($, on) => {
+    standInThrowingEdit(on, new Error('connection reset'))
+    standIn(on, { pieces: failedRun })
+    const reply = await callCodemode($)
+    expect(reply.deny).toBe(
+      `boom\n\n${SECTION}\n${echoLine(1, 'one')}\n${editLine(`unknown: no implementation for tool.call ${MAY_HAVE_RUN}`)}`,
+    )
+  })
+
+  test('Proves C1: a thrown Error is unknown with its message', () => {
+    expect(thrownOutcome(7, new Error('connection reset'))).toEqual({
+      answer: { id: 7, ok: false, error: 'connection reset' },
+      state: 'failed',
+      reason: 'connection reset',
+      unknown: true,
+    })
+  })
+
+  test('Proves C1: a thrown non-Error value is unknown with its string', () => {
+    expect(thrownOutcome(7, 'socket closed')).toEqual({
+      answer: { id: 7, ok: false, error: 'socket closed' },
+      state: 'failed',
+      reason: 'socket closed',
+      unknown: true,
+    })
+  })
+
+  test('Proves C1: a call with no answer is unknown with no answer', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: { file_path: '/a' } })
+    expect(ledger.render()).toBe(`${SECTION}\n#1 Read {"file_path":"/a"} — unknown: no answer ${MAY_HAVE_RUN}`)
+  })
+
+  test('Proves C1: a call settled unknown with no reason still carries the warning', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Read', input: {} })
+    ledger.settle(1, { answer: { id: 1, ok: false, error: '' }, state: 'failed', reason: '', unknown: true })
+    expect(ledger.render()).toBe(`${SECTION}\n#1 Read {} — unknown ${MAY_HAVE_RUN}`)
+  })
+
+  test('Proves C1: a denied call is denied and a done call is done, unchanged', async ($, on) => {
+    denyEchoDenied(on)
+    standIn(on, { pieces: [listening, echoCall(1, 'denied'), echoCall(2, 'ok'), { waitForPosts: 2 }, failedDone('boom')] })
+    const reply = await callCodemode($)
+    expect(reply.deny).toContain('#1 Bash {"command":"echo denied"} — denied: Bash(echo denied) is denied by a permission rule')
+  })
+
+  test('Proves C1: a run mixing done, failed and unknown keeps call-id order', () => {
+    const ledger = new CallLedger()
+    for (const id of [1, 2, 3, 4]) ledger.begin({ type: 'call', id, tool: 'T', input: {} })
+    ledger.settle(3, { answer: { id: 3, ok: false, error: 'x' }, state: 'failed', reason: 'x', unknown: true })
+    ledger.settle(1, { answer: { id: 1, ok: true, text: 'a' }, state: 'done' })
+    ledger.settle(2, { answer: { id: 2, ok: false, error: 'bad' }, state: 'failed', reason: 'bad' })
+    expect(ledger.render()).toBe(
+      [
+        SECTION,
+        '#1 T {} — done: a',
+        '#2 T {} — failed: bad',
+        `#3 T {} — unknown: x ${MAY_HAVE_RUN}`,
+        `#4 T {} — unknown: no answer ${MAY_HAVE_RUN}`,
+      ].join('\n'),
+    )
+  })
+
+  test('Proves C1: the transcript state of a thrown call stays failed and the answer to the script is unchanged', async ($, on) => {
+    let held: { value: unknown; version: number } = { value: undefined, version: 0 }
+    on('state.get', () => ({ value: held }))
+    on('state.set', (_$, e) => {
+      held = { value: e.value, version: held.version + 1 }
+      return { value: { isSet: true as const, version: held.version } }
+    })
+    mock.clock(on, { now: 1_000 })
+    standInThrowingEdit(on, new Error('connection reset'))
+    const stand = standIn(on, { pieces: [listening, call(1, 'Edit', edit), { waitForPosts: 1 }, done('caught')] })
+    const reply = await callCodemode($)
+    expect(reply).toEqual({ result: 'caught' })
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'no implementation for tool.call' })
+    const runs = held.value as { calls: { state: string; reason?: string }[] }[]
+    expect(runs[0]?.calls.map(row => [row.state, row.reason])).toEqual([['failed', 'no implementation for tool.call']])
+  })
+})
+
+describe('a done nested call with an empty answer', () => {
+  test('Proves N1: it renders as done with no trailing colon', () => {
+    const ledger = new CallLedger()
+    ledger.begin({ type: 'call', id: 1, tool: 'Bash', input: { command: 'true' } })
+    ledger.settle(1, { answer: { id: 1, ok: true, text: '' }, state: 'done' })
+    expect(ledger.render()).toBe(`${SECTION}\n#1 Bash {"command":"true"} — done`)
+  })
+})
+
+describe('the codemode description on an unknown outcome', () => {
+  test('Proves C2: it says a call marked unknown may have taken effect, so the script reads the current state first', () => {
+    expect(describeCodemode()).toContain(
+      'A call marked unknown may have taken effect: read the current state before redoing it.',
+    )
   })
 })

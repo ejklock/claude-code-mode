@@ -76,8 +76,21 @@ Settled for the build, cheap to reverse: when two patterns from different lists 
 - **Not shown.** A subagent's origin: auto mode refused the probe's Agent call as `[Auto-Mode Bypass]`. Whether a ToolSearch keyword query still finds a hidden tool. One run per layer, so no rate is claimed.
 - **Unrelated finding.** Gmail, Calendar and Drive answered `needs to be connected in claude.ai` to a direct call as well; it is the account's connector state, not the bridge.
 
+### Adoption measure
+
+2026-10-07, Claude Code 2.1.292, model claude-opus-5-5, `node scripts/adoption.ts --mcp-mode codemode|none [--echoes 1]` on the stand-in server. The prompt never names codemode and asks for the echo of three texts or of one. The runs must go outside the Bash sandbox: inside it the bridge cannot listen on its socket (`listen EPERM`), so every script fails and the model falls back to a direct call. A first set of runs hit this and was discarded.
+
+| Prompt | Mode | Script | Direct | Neither |
+|---|---|---|---|---|
+| 3 echoes | `codemode` | 5 | 0 | 0 |
+| 3 echoes | none (control) | 5 | 0 | 0 |
+| 1 echo | `codemode` | 5 | 0 | 0 |
+| 1 echo | none (control) | 5 | 0 | 0 |
+
+The 4-of-5 criterion is met, but the control does not tell the mode's effect apart: with the mod installed, the model already reaches the stand-in tool through codemode, even for one call, so there is no direct call for the mode to prevent. The probe's direct call came from a real server whose instructions tell the model to call a tool first (Claude Docs `guide`); a measure that shows the mode's effect needs a server like that. Confirmed by the owner, 2026-10-07: recorded as is.
+
 ### Plan
 
 1. Read Pi's four modes from its source and record each one's meaning here. Done 2026-10-07, in Scope.
 2. The `userConfig` fields (slice 1 done 2026-10-07: `hooks/exposure.ts` › `readExposure`, `modeOf`; tests in `test/node/exposure.spec.ts` and `test/codemode.test.ts`), then the `codemode` mode (slice 2 done 2026-10-07: `hooks/expose.ts` › `registerExposure`, `exposureSync`; the null-text guard in its `prompt.attachment` hook has no test, because the plugin kit never hands a hook a null text, so a test of it cannot fail) from the four probe hooks, then the other three modes (slice 3, `deferred` and `direct`, done 2026-10-07; slice 4, `hidden`, done 2026-10-07: `hooks/expose.ts` › `failedCheckVerdict`, `withoutHidden`), each with red-first tests in the plugin kit and an e2e scenario on the stand-in server.
-3. The adoption run of [issue 0004](/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md), with an MCP prompt, for the 4-of-5 criterion, plus control runs of the same prompt with no mode set, since the e2e scenario "mcp codemode mode" alone cannot show the model would otherwise call the tool directly; then the subagent case.
+3. The adoption run of [issue 0004](/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md), with an MCP prompt, for the 4-of-5 criterion, plus control runs of the same prompt with no mode set, since the e2e scenario "mcp codemode mode" alone cannot show the model would otherwise call the tool directly; then the subagent case. The measure is done on the stand-in server (see Adoption measure); the subagent case is open.

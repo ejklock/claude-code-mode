@@ -7,5 +7,35 @@
   "repository": "https://github.com/ejklock/claude-code-mode",
   "license": "MIT",
   "types": "./types/index.d.ts",
-  "keywords": ["codemode", "code-mode", "claude-code", "mod", "tool-calling", "token-efficiency", "pi", "quickjs"]
+  "keywords": ["codemode", "code-mode", "claude-code", "mod", "tool-calling", "token-efficiency", "pi", "quickjs"],
+  "userConfig": {
+    "mcpCodemode": {
+      "type": "string",
+      "multiple": true,
+      "title": "MCP servers behind codemode",
+      "description": "Servers or tools (server, server__tool, server__prefix*), separated by commas, the model reaches only through the codemode tool.",
+      "default": []
+    },
+    "mcpDeferred": {
+      "type": "string",
+      "multiple": true,
+      "title": "MCP servers deferred",
+      "description": "Servers or tools (server, server__tool, server__prefix*), separated by commas, the model loads on demand through tool search.",
+      "default": []
+    },
+    "mcpDirect": {
+      "type": "string",
+      "multiple": true,
+      "title": "MCP servers direct",
+      "description": "Servers or tools (server, server__tool, server__prefix*), separated by commas, the model sees with their full schemas every turn.",
+      "default": []
+    },
+    "mcpHidden": {
+      "type": "string",
+      "multiple": true,
+      "title": "MCP servers hidden",
+      "description": "Servers or tools (server, server__tool, server__prefix*), separated by commas, the model does not see at all.",
+      "default": []
+    }
+  }
 }

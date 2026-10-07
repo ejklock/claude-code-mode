@@ -15,13 +15,25 @@ The mods API in build 2.1.292 cannot drop a tool from the model's request. The p
 ### Scope
 
 Included:
-- Pi's four modes per MCP server: `codemode` (callable from scripts, hidden from the model), `deferred` (behind ToolSearch), `direct` (in the model's main list) and `hidden`. The exact meaning of each, `hidden` above all, is read from Pi's source before building, and the mod follows it.
+- Pi's four modes, as Pi's MCP guide (`packages/coding-agent/docs/mcp.md`, "Control tool exposure", read 2026-10-07) defines them:
+
+  | Mode | Pi's meaning | In this mod |
+  |---|---|---|
+  | `codemode` | Callable from scripts; neither declared to the model nor listed in the codemode description. `codemode-deferred` is an alias. | Probe layers 1 to 3 below. A direct call that still happens runs, as in Pi, where a tool loaded by `tool_search` is callable. |
+  | `deferred` | Not declared until `tool_search` loads it; also callable from scripts. | `isDeferred: true` in `tool.describe`; the name stays in `deferred_tools_delta`. |
+  | `direct` | Declared like a built-in tool and callable from scripts. | `isDeferred: false` in `tool.describe`. |
+  | `hidden` | Registered but unreachable. | Layers 1 to 3, a `tool.check` deny on every origin, scripts included, and the tool left out of the codemode description and of `ALL_TOOLS`. |
+
+- Per-tool modes, Pi's `toolExposure`: a list entry names a server (`codegraph`) or a server and a tool pattern where `*` matches any characters (`claude_ai_Gmail__trash_*`).
 - The setting that assigns them, and a server it does not name, which keeps Claude Code's own placement and stays callable from scripts, as today.
-- For `codemode`, the four layers proven by the probe: drop the tool's name from the `deferred_tools_delta` attachment; answer `isDeferred: true` in `tool.describe`; prefix the tool's description with a codemode-only note and add one line to the `mcp_instructions_delta` attachment; deny in `tool.check` a call whose `next.origin.plugin` is `engine`.
+- The `codemode` layers proven by the probe: drop the tool's name from the `deferred_tools_delta` attachment (1); answer `isDeferred: true` in `tool.describe` (2); prefix the tool's description with a codemode-only note and add one line to the `mcp_instructions_delta` attachment (3). The probe's fourth layer, a `tool.check` deny of the `engine` origin, is not taken (see Decision).
 - `mcp__codemode__codemode` itself never takes a mode.
 
 Out:
 - The output size budget, which is [issue 0012](/issues/0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md).
+- Pi's `mcp_servers` system prompt section: the `mcp_instructions_delta` line of layer 3 does its work here.
+- Pi's rule that the resource tools take the widest exposure: Claude Code's `ListMcpResourcesTool` and `ReadMcpResourceTool` are built-in tools, not a server's.
+- `searchTools()` and `describeTool()`, which this mod's scripts do not have.
 
 ### Decision
 
@@ -30,14 +42,23 @@ Confirmed by the owner, 2026-10-07:
 - **Set in Claude Code's settings; nothing set keeps Claude Code's default.** This differs from Pi, whose default is `codemode`: installing the mod changes no server's exposure until the owner names it.
 - **The setting's shape:** the manifest's `userConfig`, stored in settings.json `pluginConfigs.codemode.options` and drawn by `/config`. A field holds only a string, number, boolean or string list, not a map, so there is one list of server names per mode (for example `mcpCodemode: ["claude_ai_Gmail", "codegraph"]`). Not taken: a custom top-level settings key read with `$.settings.read`, which `/config` does not draw or validate. A server named in two lists fails the load with a message naming it.
 
+Confirmed by the owner, 2026-10-07, after reading Pi's guide:
+- **A direct call to a `codemode` tool runs, as in Pi.** Layers 1 to 3 keep the model from seeing the tool; the probe's run with them made no direct call. Not taken: the `tool.check` deny of the `engine` origin, stricter than Pi. `hidden` still refuses every call.
+- **Per-tool modes go in the same lists.** An entry naming an exact tool wins over a pattern, and a pattern over a bare server name, as in Pi. Not taken: server-only modes, with per-tool left for later.
+- **A `codemode` tool stays in the codemode description's sections**, unlike Pi: this mod's scripts have no `searchTools()` or `describeTool()`, and the sections let the model find a tool without spending a call on `ALL_TOOLS`. A `hidden` tool is left out.
+
+Found on 2026-10-07 with a throwaway plugin installed in build 2.1.292: the manifest has no list type, and `claude plugin validate` accepts a list only as `"type": "string", "multiple": true`. `/config` draws a plugin's choice, boolean and text fields but not a `multiple` one, and draws nothing for a `--plugin-dir` plugin. `/plugin configure <plugin>` draws it as one text line and stores what is typed as one string (`"codegraph, claude_ai_Gmail"`), which `register` receives as a string. So each setting is read as either a list or one comma-separated string.
+
+Settled for the build, cheap to reverse: when two patterns from different lists match one tool, the lists are read in the order `mcpHidden`, `mcpCodemode`, `mcpDeferred`, `mcpDirect`, each in its written order, and the first match wins; `hidden` first fails safe. The same entry in two lists fails the load.
+
 ### Acceptance
 
 - With no mode set, every MCP tool is placed and callable exactly as without this change: the existing e2e scenarios pass unchanged.
 - A server set to `codemode`: on a prompt that does not name codemode and needs its tool, the model makes no direct call and calls it from a codemode script, in at least 4 of 5 runs.
-- A direct call to a `codemode` tool that still happens is refused, its reason names `tools.<name>(args)`, and the server never runs.
 - A script's call to a `codemode` tool runs and returns the server's result, and a deny rule on the tool still refuses it.
-- A server set to `deferred`, `direct` or `hidden` shows Pi's behavior for that mode, each proven by a scenario.
-- A subagent's direct call is recorded: either refused like the main loop's, or the hook lets a subagent without codemode through.
+- A server set to `deferred`, `direct` or `hidden` shows Pi's behavior for that mode, each proven by a scenario; a `hidden` tool is refused from the model and from a script, and the server never runs.
+- A per-tool entry overrides its server's mode, and an exact tool name wins over a pattern.
+- A subagent's view of a `codemode` tool is recorded: whether it sees the tool and how it reaches it.
 - No source file calls `$.mcp.call`; the invariants check passes.
 
 ### Probe
@@ -53,6 +74,6 @@ Confirmed by the owner, 2026-10-07:
 
 ### Plan
 
-1. Read Pi's four modes from its source and record each one's meaning here.
-2. The `userConfig` fields, then the `codemode` mode from the four probe hooks, then the other three modes, each with red-first tests in the plugin kit and an e2e scenario on the stand-in server.
+1. Read Pi's four modes from its source and record each one's meaning here. Done 2026-10-07, in Scope.
+2. The `userConfig` fields (slice 1 done 2026-10-07: `hooks/exposure.ts` › `readExposure`, `modeOf`; tests in `test/node/exposure.spec.ts` and `test/codemode.test.ts`), then the `codemode` mode from the four probe hooks, then the other three modes, each with red-first tests in the plugin kit and an e2e scenario on the stand-in server.
 3. The adoption run of [issue 0004](/issues/0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md), with an MCP prompt, for the 4-of-5 criterion; then the subagent case.

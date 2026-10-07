@@ -90,12 +90,26 @@ sequenceDiagram
 
 ## Requirements
 
-- Claude Code with mods support (tested on 2.1.291; the mods API is early access).
+- Claude Code with mods support (tested on 2.1.291 and 2.1.292; the mods API is early access).
 - Node.js 22.19 or newer on your `PATH` (tested on Node 26).
 
 ## Install
 
-From Claude Code:
+Run one command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ejklock/claude-code-mode/main/install.sh | sh
+```
+
+The script adds the marketplace, installs the plugin, and installs its dependency. It is safe to run again; a second run updates the plugin.
+
+To choose where the plugin is installed, set `SCOPE` to `user` (the default), `project` or `local`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ejklock/claude-code-mode/main/install.sh | SCOPE=project sh
+```
+
+If you prefer not to pipe a script, install by hand. From Claude Code:
 
 ```
 /plugin install codemode --marketplace ejklock/claude-code-mode
@@ -103,7 +117,7 @@ From Claude Code:
 
 Answer `y` to add the marketplace, then pick a scope.
 
-> **Known gap:** the child needs `@earendil-works/pi-codemode`, and `node_modules` is not in the repository. After you install, run `npm ci` in the installed plugin's folder. A self-installing first run is planned.
+> **Known gap:** the child needs `@earendil-works/pi-codemode`, and `node_modules` is not in the repository. For the manual route, run `npm ci --omit=dev` in the installed plugin's folder after you install. The install script does this for you.
 
 To develop or try it from a clone:
 
@@ -147,6 +161,7 @@ claude plugin test .       # the mod's side, with a stand-in child
 npm test                   # the real child on a real socket, and invariants
 npm run typecheck
 node scripts/e2e.ts        # headless end to end with claude -p (spends model tokens)
+sh scripts/install-check.sh # runs install.sh for real into a throwaway config (slow)
 node scripts/partial.ts --runs 3  # duplicated writes after a failed script, headless (spends model tokens)
 ```
 

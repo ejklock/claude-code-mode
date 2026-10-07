@@ -10,3 +10,4 @@
 ## Closed
 
 * [0005 — Benchmarks show the bridge overhead and the token, turn and time savings of codemode per task](0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md) - closed
+* [0006 — A failed codemode script reports which nested calls already ran, so a retry does not repeat side effects](0006-a-failed-codemode-script-reports-which-nested-calls-already-ran-so-a-retry-does-not-repeat-side-effects.md) - closed

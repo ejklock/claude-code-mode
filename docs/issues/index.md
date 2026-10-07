@@ -6,6 +6,8 @@
 * [0002 — A codemode script calls Write, Edit, Glob, Grep and the session's MCP tools through the bridge](0002-a-codemode-script-calls-write-edit-glob-grep-and-the-session-s-mcp-tools-through-the-bridge.md) - open
 * [0003 — The transcript draws a codemode call as its highlighted script, its nested calls live, and a summary](0003-the-transcript-draws-a-codemode-call-as-its-highlighted-script-its-nested-calls-live-and-a-summary.md) - open
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
+* [0011 — Each MCP server takes one of Pi's four exposure modes from the plugin settings, and an unset server keeps Claude Code's default](0011-each-mcp-server-takes-one-of-pi-s-four-exposure-modes-from-the-plugin-settings-and-an-unset-server-keeps-claude-code-s-default.md) - open
+* [0012 — A codemode result over a size budget returns its head and tail to the model and keeps the whole output in a file](0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md) - open
 
 ## Closed
 

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { classifySavingsRun, parseRunResult, summarizeSavings } from '../../scripts/savings.ts'
+import { classifySavingsRun, failingSuite, measureStream, parseRunResult, summarizeSavings } from '../../scripts/savings.ts'
 import type { SavingsSample } from '../../scripts/savings.ts'
 
 const answer = 'the answer text'
@@ -150,5 +154,146 @@ describe('the summary of one task and side', () => {
       ['todos', 'without'],
       ['grep', 'with'],
     ])
+  })
+})
+
+const resultEvent = {
+  type: 'result',
+  subtype: 'success',
+  is_error: false,
+  usage: { input_tokens: 4, output_tokens: 217, cache_creation_input_tokens: 19284, cache_read_input_tokens: 17174 },
+  num_turns: 2,
+  total_cost_usd: 0.162,
+  duration_ms: 4609,
+  result: answer,
+}
+
+const initEvent = { type: 'system', subtype: 'init', model: 'claude-opus-5-5', claude_code_version: '2.1.292' }
+
+const toolUse = (messageId: string, toolId: string, name: string): Record<string, unknown> => ({
+  type: 'assistant',
+  message: { id: messageId, content: [{ type: 'tool_use', id: toolId, name }] },
+})
+
+const textTurn = (messageId: string): Record<string, unknown> => ({
+  type: 'assistant',
+  message: { id: messageId, content: [{ type: 'text', text: 'the answer' }] },
+})
+
+const toolResult = (toolId: string, content: unknown): Record<string, unknown> => ({
+  type: 'user',
+  message: { content: [{ type: 'tool_result', tool_use_id: toolId, content }] },
+})
+
+/** Stream-json as the tool writes it: one event per line. */
+const lines = (...events: unknown[]): string => events.map(event => JSON.stringify(event)).join('\n')
+
+describe('the stream-json parser', () => {
+  it('Proves C1: a line stream parses into the same numbers as the final result event holds', () => {
+    const stream = lines(initEvent, toolUse('m1', 't1', 'Read'), toolResult('t1', 'x'), textTurn('m2'), resultEvent)
+    assert.deepEqual(parseRunResult(stream), { ...parsed, tools: ['Read'] })
+  })
+
+  it('Proves C1: a run with no tool calls reports no context output', () => {
+    assert.equal(measureStream(lines(initEvent, textTurn('m1'), resultEvent)).ctxOut, 0)
+  })
+
+  it('Proves C1: two tool results of 100 and 250 characters give 350', () => {
+    const stream = lines(
+      toolUse('m1', 't1', 'Bash'),
+      toolResult('t1', 'a'.repeat(100)),
+      toolUse('m2', 't2', 'Bash'),
+      toolResult('t2', 'b'.repeat(250)),
+      resultEvent,
+    )
+    assert.equal(measureStream(stream).ctxOut, 350)
+  })
+
+  it('Proves C1: a tool result made of blocks sums its text blocks and ignores the others', () => {
+    const blocks = [{ type: 'text', text: 'a'.repeat(30) }, { type: 'image', source: 'z'.repeat(999) }, { type: 'text', text: 'b'.repeat(12) }]
+    const stream = lines(toolUse('m1', 't1', 'Read'), toolResult('t1', blocks), resultEvent)
+    assert.equal(measureStream(stream).ctxOut, 42)
+  })
+
+  it('Proves C1: a malformed line is skipped and the run is still parsed', () => {
+    const stream = [JSON.stringify(initEvent), '{"type": "assist', JSON.stringify(resultEvent)].join('\n')
+    assert.equal(parseRunResult(stream)?.turns, 2)
+  })
+
+  it('Proves C1: a stream with no result event is an error outcome', () => {
+    const outcome = classifySavingsRun({ status: 0, stdout: lines(initEvent, textTurn('m1')) })
+    assert.deepEqual(outcome, { ok: false, reason: 'the output holds no result record' })
+  })
+
+  it('Proves C1: the init event is found past the hook events that precede it', () => {
+    const hook = { type: 'system', subtype: 'hook_started' }
+    assert.equal(parseRunResult(lines(hook, initEvent, resultEvent))?.model, 'claude-opus-5-5')
+  })
+})
+
+describe('the turn trace', () => {
+  it('Proves C2: a three-turn stream prints three lines in order', () => {
+    const stream = lines(
+      toolUse('m1', 't1', 'Bash'),
+      toolResult('t1', 'a'.repeat(120)),
+      toolUse('m2', 't2', 'Read'),
+      toolResult('t2', 'b'.repeat(30)),
+      textTurn('m3'),
+      resultEvent,
+    )
+    assert.deepEqual(measureStream(stream).trace, [
+      'turn 1: Bash -> 120 chars',
+      'turn 2: Read -> 30 chars',
+      'turn 3: (answer)',
+    ])
+  })
+
+  it('Proves C2: a turn with two tool calls lists both and the sum of their results', () => {
+    const stream = lines(
+      toolUse('m1', 't1', 'Write'),
+      toolUse('m1', 't2', 'Write'),
+      toolResult('t1', 'ok'),
+      toolResult('t2', 'done!'),
+      textTurn('m2'),
+      resultEvent,
+    )
+    assert.deepEqual(measureStream(stream).trace, ['turn 1: Write, Write -> 7 chars', 'turn 2: (answer)'])
+  })
+
+  it('Proves C2: a thinking-only block before the tool call stays one turn', () => {
+    const thinking = { type: 'assistant', message: { id: 'm1', content: [{ type: 'thinking', thinking: '' }] } }
+    const stream = lines(thinking, toolUse('m1', 't1', 'Read'), toolResult('t1', 'abc'), textTurn('m2'), resultEvent)
+    assert.deepEqual(measureStream(stream).trace, ['turn 1: Read -> 3 chars', 'turn 2: (answer)'])
+  })
+})
+
+describe('the context-output column', () => {
+  it('Proves C2: the median and the range come from the correct runs only', () => {
+    const withCtx = (ctxOut: number, correct: boolean): SavingsSample => ({ ...sample('todos', 'with', correct, true, 100, 2), ctxOut })
+    const [row] = summarizeSavings([withCtx(100, true), withCtx(300, true), withCtx(9, false)])
+    assert.equal(row?.median?.ctxOut, 200)
+    assert.deepEqual(row?.ctxOutRange, [100, 300])
+  })
+})
+
+describe('the test-failures fixture', () => {
+  it('Proves C1: node --test reports exactly the two named failures and at least 150 passes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'failing-suite-'))
+    try {
+      for (const [path, content] of Object.entries(failingSuite())) {
+        mkdirSync(dirname(join(dir, path)), { recursive: true })
+        writeFileSync(join(dir, path), content)
+      }
+      const { NODE_TEST_CONTEXT: _inherited, ...env } = process.env
+      const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap'], { cwd: dir, encoding: 'utf8', env })
+      const failed = [...run.stdout.matchAll(/^\s*not ok \d+ - (.+)$/gm)]
+        .map(match => match[1] ?? '')
+        .filter(name => !name.startsWith('module ') && name !== 'billing' && !name.endsWith('.js'))
+      const passed = [...run.stdout.matchAll(/^\s*ok \d+ - /gm)].length
+      assert.deepEqual(failed.sort(), ['rejects an expired coupon', 'rounds invoice totals to cents'])
+      assert.ok(passed >= 150, `only ${passed} passed`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

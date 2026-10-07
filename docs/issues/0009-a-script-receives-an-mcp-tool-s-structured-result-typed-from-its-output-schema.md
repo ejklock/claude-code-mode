@@ -18,6 +18,7 @@ When an MCP tool declares an `outputSchema`, the engine's result carries `struct
 
 ### Decision
 
+- Types check, 2026-10-07: `structuredContent` appears only on `McpToolResult`, which `$.mcp.call` returns, and CLAUDE.md hard rule 1 forbids that call. On `$.tool.call`, an MCP tool's `result` is typed `unknown` (`ToolResultOf`), and `text` holds the joined text blocks. Whether that `result` carries the structured content is not documented, so a probe must show it first: a fake tool that declares an `outputSchema`, called through `$.tool.call`, with its `result` printed. If `result` does not carry it, the change needs an upstream request, not codemode work.
 - Not started. It changes what a script receives, so an ADR comes first. Before that ADR, a measurement checks how many connected servers declare `outputSchema` and whether scripts get shorter.
 
 ### Acceptance

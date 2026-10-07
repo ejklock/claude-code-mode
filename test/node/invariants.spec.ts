@@ -18,7 +18,7 @@ import {
   toolDocs,
 } from '../../hooks/describe.ts'
 import type { Section } from '../../hooks/describe.ts'
-import { classifyRun } from '../../scripts/adoption.ts'
+import { classifyMcpRun, classifyRun, flagError } from '../../scripts/adoption.ts'
 import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
 import type { ToolSpec } from '../../shared/protocol.ts'
 
@@ -221,6 +221,88 @@ describe('an adoption run is valid only when claude finished', () => {
   it('Proves C1: a zero status with no result event fails the run', () => {
     const outcome = classifyRun({ status: 0, stdout: calling('Bash') })
     assert.deepEqual(outcome, { ok: false, reason: 'the stream has no result event' })
+  })
+})
+
+describe('an mcp adoption run is classified by how the echo tool was reached', () => {
+  const line = (event: Record<string, unknown>): string => `${JSON.stringify(event)}\n`
+  const use = (id: string, name: string): string =>
+    line({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name }] } })
+  const result = (id: string, content: unknown): string =>
+    line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+  const finished = line({ type: 'result' })
+  const CODEMODE = 'mcp__codemode__codemode'
+  const ECHO = 'mcp__fake__echo'
+  const kindOf = (stdout: string): unknown => {
+    const outcome = classifyMcpRun({ status: 0, stdout })
+    return outcome.ok ? outcome.kind : outcome
+  }
+
+  it('Proves C1: a codemode call whose result holds the echo and no direct call is a script', () => {
+    const stdout = use('a', CODEMODE) + result('a', [{ type: 'text', text: 'fake-echo: a' }]) + finished
+    assert.equal(kindOf(stdout), 'script')
+  })
+
+  it('Proves C1: a codemode call plus one direct echo call is direct', () => {
+    const stdout = use('a', CODEMODE) + result('a', 'fake-echo: a') + use('b', ECHO) + finished
+    assert.equal(kindOf(stdout), 'direct')
+  })
+
+  it('Proves C1: only direct echo calls are direct', () => {
+    assert.equal(kindOf(use('a', ECHO) + use('b', ECHO) + finished), 'direct')
+  })
+
+  it('Proves C1: a codemode call whose result lacks the echo is neither', () => {
+    assert.equal(kindOf(use('a', CODEMODE) + result('a', 'DENIAL: nope') + finished), 'neither')
+  })
+
+  it('Proves C1: another tool result holding the echo does not make a script', () => {
+    const stdout = use('a', CODEMODE) + use('b', 'Bash') + result('b', 'fake-echo: a') + finished
+    assert.equal(kindOf(stdout), 'neither')
+  })
+
+  it('Proves C1: a codemode result with no content field is neither', () => {
+    assert.equal(kindOf(use('a', CODEMODE) + result('a', undefined) + finished), 'neither')
+  })
+
+  it('Proves C1: no tool call is neither', () => {
+    assert.equal(kindOf(finished), 'neither')
+  })
+
+  it('Proves C1: an invalid run stays invalid as classifyRun says', () => {
+    assert.deepEqual(classifyMcpRun({ status: 1, stdout: finished }), { ok: false, reason: 'exit status 1' })
+    assert.deepEqual(classifyMcpRun({ status: 0, stdout: use('a', ECHO) }), {
+      ok: false,
+      reason: 'the stream has no result event',
+    })
+  })
+})
+
+describe('the adoption flags are checked with a message each', () => {
+  it('Proves C1: runs 0 needs a positive integer', () => {
+    assert.equal(flagError(0, undefined, undefined), '--runs needs a positive integer')
+  })
+
+  it('Proves C1: runs 1.5 needs a positive integer', () => {
+    assert.equal(flagError(1.5, undefined, undefined), '--runs needs a positive integer')
+  })
+
+  it('Proves C1: an unknown mode names codemode and none', () => {
+    assert.equal(flagError(1, 'bogus', undefined), '--mcp-mode needs one of: codemode, none')
+  })
+
+  it('Proves C1: echoes without a mode only applies with --mcp-mode', () => {
+    assert.equal(flagError(1, undefined, '1'), '--echoes only applies with --mcp-mode')
+  })
+
+  it('Proves C1: echoes 2 names 1 and 3', () => {
+    assert.equal(flagError(1, 'none', '2'), '--echoes needs one of: 1, 3')
+  })
+
+  it('Proves C1: valid flag combinations have no error', () => {
+    assert.equal(flagError(1, undefined, undefined), undefined)
+    assert.equal(flagError(5, 'codemode', '1'), undefined)
+    assert.equal(flagError(1, 'none', '3'), undefined)
   })
 })
 

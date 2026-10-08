@@ -8,7 +8,9 @@ import type { CodemodeCall, CodemodeRun } from '../types/index.d.ts'
 const RUNS = atom({ plugin: 'codemode', key: 'runs' } as const, [])
 
 const CODEMODE_TOOL = 'mcp__codemode__codemode'
-const TITLE = 'codemode · script'
+const TITLE = 'codemode · script.js'
+/** The columns the engine's line-number gutter takes: up to 999 lines plus a separator; its exact width is undocumented, so the engine's cut absorbs any miscount. */
+const GUTTER = 5
 
 const GLYPHS = { running: '…', done: '✓', denied: '✗', failed: '✗' } as const
 
@@ -41,6 +43,8 @@ const DOUBLE_WIDTH: [number, number][] = [
   [0x20000, 0x3fffd],
 ]
 const GAP = '  '
+/** The title's width at its widest plausible line count; the result box cannot know the count, so both boxes floor here and stay equal. */
+const TITLE_FLOOR = columnsWide(`${TITLE} · 999 lines`)
 
 type Columns = { tool: number; label: number; tail: number }
 type Row = { call: CodemodeCall; label: string; tail: string }
@@ -109,7 +113,7 @@ function surfaceWidth(surfaceColumns: number): number {
 /** The one width both boxes of a call share: the surface's room when measured, else the script's and the rows'. */
 function contentWidth(longest: number, columns: Columns, surfaceColumns: number | undefined): number {
   if (surfaceColumns !== undefined) return surfaceWidth(surfaceColumns)
-  return Math.min(WIDTH_CAP, Math.max(TITLE.length, longest, rowWidth(columns)))
+  return Math.min(WIDTH_CAP, Math.max(TITLE_FLOOR, longest + GUTTER, rowWidth(columns)))
 }
 
 /** The result box's width: the surface's room when measured, else the run's stored script width, else none. */
@@ -160,6 +164,13 @@ function capLines(text: string): { shown: string; hidden: number } {
   return { shown: lines.slice(0, RESULT_LINES).join('\n'), hidden: count - RESULT_LINES }
 }
 
+/** The title of a script's row; lines are counted as `capLines` counts them. */
+function titleOf(script: string): string {
+  const lines = script.split('\n')
+  const count = lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+  return `${TITLE} · ${count} ${count === 1 ? 'line' : 'lines'}`
+}
+
 function moreLine(hidden: number): string {
   return `… ${hidden} more ${hidden === 1 ? 'line' : 'lines'}`
 }
@@ -197,9 +208,9 @@ export const registerRender: Register = on => {
         paddingX={1}
       >
         <Box key="title">
-          <Text dimColor>{cutLines(TITLE, width)}</Text>
+          <Text dimColor>{cutLines(titleOf(script), width)}</Text>
         </Box>
-        <Code source={cutLines(script, width)} language="javascript" />
+        <Code source={script} language="javascript" startLine={1} wrap="truncate-end" />
         {rows.length > 0 ? (
           <Box key="divider">
             <Text dimColor>{'─'.repeat(width)}</Text>

@@ -152,6 +152,47 @@ In a script:
 
 The script is the body of an async function, so top-level `await` works. `return` and `exit()` end the script; only what it prints with `text()` or `console.log()` comes back. Scripts time out after 120 seconds. Every `tools.*` call meets the session's permission mode and rules as a direct call does, so `Write` and `Edit` follow `acceptEdits`, allow rules and deny rules, and a refusal reaches the script as a rejection.
 
+### MCP exposure modes
+
+Each MCP server, or each of its tools, takes one of Pi's four exposure modes. The modes set what the model sees and what a script can do:
+
+| Mode | What the model sees | In a script |
+|---|---|---|
+| `codemode` | The tool is not declared up front. Its description tells the model to use it only through the codemode tool, and the codemode description lists it. | Callable. |
+| `deferred` | The tool is not declared until tool search loads it. | Callable. |
+| `direct` | The tool is declared with its full schema every turn, like a built-in tool. | Callable. |
+| `hidden` | Nothing. A direct call is refused. | Refused, and left out of `ALL_TOOLS`. |
+
+A server named in no list keeps Claude Code's own placement and stays callable from scripts. Installing the plugin changes no server until you name it. This differs from Pi, where the default is `codemode`.
+
+Four settings hold the entries, one list for each mode: `mcpCodemode`, `mcpDeferred`, `mcpDirect` and `mcpHidden`. An entry is a server name (`codegraph`), one tool (`claude_ai_Gmail__trash_message`), or a server and a tool pattern, where `*` matches any characters (`claude_ai_Gmail__trash_*`). Write the name without the `mcp__` prefix.
+
+`/plugin configure codemode` draws each setting as one text line and stores what you type as one comma-separated string, such as `codegraph, claude_ai_Gmail`. To set them by hand, put the lists in `settings.json`, under the plugin's name:
+
+```json
+{
+  "pluginConfigs": {
+    "codemode": {
+      "options": {
+        "mcpCodemode": ["claude_ai_Gmail", "codegraph"],
+        "mcpHidden": ["claude_ai_Gmail__trash_*"]
+      }
+    }
+  }
+}
+```
+
+When more than one entry matches a tool, an exact tool name wins over a pattern, and a pattern wins over a server name. When two patterns match, the lists are read in the order `mcpHidden`, `mcpCodemode`, `mcpDeferred`, `mcpDirect`, and the first match wins. The same entry in two lists, or twice in one, fails the load with a message that names it. In the example, every Gmail tool is in `codemode` mode except the `trash_*` tools, which are hidden.
+
+Limits:
+
+- `deferred` takes effect only for a tool the engine is willing to defer. With `ENABLE_TOOL_SEARCH=auto`, the engine can keep a tool's schema in the request, and the model can call it directly.
+- A direct call to a `codemode` tool still runs, as in Pi. The mode keeps the model from seeing the tool; it does not refuse the call.
+- A `hidden` tool is refused for the model and missing from scripts.
+- A `codemode` tool stays in the codemode description, unlike Pi, because scripts here have no `searchTools()` or `describeTool()`.
+
+The measurements, including the adoption runs and the subagent view, are in [issue 0011](docs/issues/0011-each-mcp-server-takes-one-of-pi-s-four-exposure-modes-from-the-plugin-settings-and-an-unset-server-keeps-claude-code-s-default.md).
+
 ## Develop
 
 ```sh
@@ -171,7 +212,7 @@ Decisions and open work live in [`docs/`](docs/index.md): the [constitution](doc
 
 ## Roadmap
 
-- Every built-in tool, the Agent tool and MCP servers as typed `tools.*`.
+- Every built-in tool and the Agent tool as typed `tools.*`.
 - `store()` / `load()`, tool search, and parity with Pi's lower-case names.
 - Re-measure the task savings at five or more runs per side once the rate window allows ([issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md)).
 

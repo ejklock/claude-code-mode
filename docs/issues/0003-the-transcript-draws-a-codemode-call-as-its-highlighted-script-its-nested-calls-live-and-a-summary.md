@@ -30,6 +30,7 @@ Out: new tools ([issue 0002](/issues/0002-a-codemode-script-calls-write-edit-glo
 - This issue comes before issue 0002, so its demos are drawn this way. Same source.
 - After the first live run, the owner asked for a bordered container (2026-10-06). The `ToolUse` row becomes a `round`-bordered box holding a title line (`codemode · script`), the script, a divider and the call list. The `ToolResult` row becomes a matching box titled with the summary, its border green on success and red on error. Long paths are shortened with `…/`. Boxes have no border title in this build, so the title is the first line inside the box.
 - On a measured viewport the box is exactly the viewport's columns wide down to 8 columns, and the title is cut with `…` when it does not fit, which replaces "keeps the title's width" for the narrow case. A line is cut by terminal columns (CJK and emoji count two, combining marks none), so a wide character never pushes a line past the border. The owner, 2026-10-06.
+- On 2026-10-08 the owner asked for the script to look like code in an editor. A mod sets no font (the terminal's font is used; `CodeProps` has no font prop), so three changes were chosen: the `Code` element numbers the lines (`startLine: 1`), the engine cuts a long line itself (`wrap: 'truncate-end'`, gutter aware) in place of `cutLines`, so the script reaches it whole, and the title reads like an editor tab, `codemode · script.js · N lines`. Reformatting the script for display was rejected: the row shows the exact text that ran. Without a viewport, the content width is the widest of a fixed title floor (the columns of `codemode · script.js · 999 lines`, 32), the longest line plus a 5-column gutter reserve, and the call rows, capped at 100. The floor is fixed because `ToolResult` cannot know the line count and the result box shares the width.
 
 ### Acceptance
 
@@ -96,6 +97,24 @@ On 2026-10-06 the width rule changed after the owner asked for the width of Clau
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 ```
+
+The editor look, live on 2026-10-08 in a `claude --plugin-dir .` pane 112 columns wide, trimmed. The gutter takes 4 columns for a 17-line script, and the engine cuts a long line at the border:
+
+```
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ codemode · script.js · 17 lines                                                                            │
+│   1 const root = '/Volumes/Developer/www/klock-tecnologia/claude-code-mode';                               │
+│   2 const files = ['bridge.ts','describe.ts','expose.ts','exposure.ts','register.ts','render.tsx'].map(f … │
+│   3 const results = await Promise.allSettled(files.map(f => tools.Read({ file_path: f })));                │
+│   4 const rows = [];                                                                                       │
+│   5 results.forEach((r, i) => {                                                                            │
+│   6   const file = files[i].replace(root + '/', '');                                                       │
+│ …                                                                                                          │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ✓ Read …/hooks/bridge.ts                19 ms                                                              │
+```
+
+Tracked from the review of that slice (nit, the owner chose to track it): `test/render.test.tsx` pins `TITLE_FLOOR = 32` by hand, like `WIDTH_CAP`, `FRAME` and `GUTTER`, so a title change must update it too.
 
 ### Plan
 

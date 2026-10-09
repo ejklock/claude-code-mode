@@ -643,6 +643,9 @@ const composeFor = ($: Engine, tools: string[]) =>
     traits: [],
   })
 
+const NOTE_TEXT =
+  'To process data, batch tool calls or filter large output with a script, use the codemode tool (JavaScript calling `tools.<name>(args)`) instead of inline python or node in Bash. Keep Bash for running commands.'
+
 describe('the codemode description', () => {
   test('Proves C1: the tool is declared up front with the intro, the globals and one section per tool', async ($, on) => {
     on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
@@ -660,8 +663,39 @@ describe('the codemode description', () => {
 
   test('Proves C1: another tool keeps its description and its placement', async ($, on) => {
     on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
-    const answer = await $.tool.describe({ tool: 'Bash', description: 'the engine text', provider: ENGINE_ORIGIN })
+    const answer = await $.tool.describe({ tool: 'Read', description: 'the engine text', provider: ENGINE_ORIGIN })
     expect(answer).toEqual({ description: 'the engine text', isDeferred: true })
+  })
+
+  test('Proves C1: Bash ends with the note after a blank line, once, and keeps its placement', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: false as const }))
+    const answer = await $.tool.describe({ tool: 'Bash', description: 'the engine text', provider: ENGINE_ORIGIN })
+    expect(answer.description).toBe(`the engine text\n\n${NOTE_TEXT}`)
+    expect(answer.description.split(NOTE_TEXT)).toHaveLength(2)
+    expect(answer.isDeferred).toBe(false)
+  })
+
+  test('Proves C1: a deferred Bash keeps isDeferred true and still ends with the note', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: true as const }))
+    const answer = await $.tool.describe({ tool: 'Bash', description: 'the engine text', provider: ENGINE_ORIGIN })
+    expect(answer.description).toBe(`the engine text\n\n${NOTE_TEXT}`)
+    expect(answer.isDeferred).toBe(true)
+  })
+
+  test('Proves C1: a Bash description that already ends with the note is not extended again', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: false as const }))
+    const given = `the engine text\n\n${NOTE_TEXT}`
+    const answer = await $.tool.describe({ tool: 'Bash', description: given, provider: ENGINE_ORIGIN })
+    expect(answer.description).toBe(given)
+  })
+
+  test('Proves C1: a downstream hook that throws is skipped and Bash still ends with the note once', async ($, on) => {
+    on('tool.describe', (_$, e) => ({ description: e.description, isDeferred: false as const }))
+    on('tool.describe', { tool: 'Bash' }, () => {
+      throw new Error('boom')
+    })
+    const answer = await $.tool.describe({ tool: 'Bash', description: 'the engine text', provider: ENGINE_ORIGIN })
+    expect(answer.description).toBe(`the engine text\n\n${NOTE_TEXT}`)
   })
 
   test('Proves C1: the builder gives one section per exposed tool, in list order', () => {

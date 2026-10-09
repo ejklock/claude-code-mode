@@ -5,6 +5,10 @@ import type { McpTool, ToolArg, ToolSpec } from '../shared/protocol.ts'
 export const GUIDELINE =
   'Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.'
 
+/** The note Bash's description ends with, so data-processing scripts go to codemode instead of inline python or node. */
+export const BASH_NOTE =
+  'To process data, batch tool calls or filter large output with a script, use the codemode tool (JavaScript calling `tools.<name>(args)`) instead of inline python or node in Bash. Keep Bash for running commands.'
+
 /** How a script calls one tool, and what the call resolves to. */
 export type ToolDoc = {
   name: string

@@ -2,7 +2,7 @@ import { atom, update } from 'claude-code'
 import type { Register, ToolInfo } from 'claude-code'
 
 import { CodemodeBridge } from './bridge.ts'
-import { GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
+import { BASH_NOTE, GUIDELINE, codeDescription, describeCodemode } from './describe.ts'
 import { exposureSync, registerExposure, withoutHidden } from './expose.ts'
 import { readExposure } from './exposure.ts'
 import { registerRender } from './render.tsx'
@@ -70,6 +70,12 @@ export const register: Register = (on, options) => {
   on('tool.describe', { tool: TOOL_ID }, () => ({ description: describeCodemode(), isDeferred: false })).catch(
     (_$, e, next) => next(e),
   )
+
+  on('tool.describe', { tool: 'Bash' }, async (_$, e, next) => {
+    const answer = await next(e)
+    if (answer.description.endsWith(BASH_NOTE)) return answer
+    return { ...answer, description: `${answer.description}\n\n${BASH_NOTE}` }
+  }).catch((_$, e, next) => next(e))
 
   on('prompt.compose', async (_$, e, next) => {
     const { sections } = await next(e)

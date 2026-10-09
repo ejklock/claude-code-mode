@@ -39,6 +39,7 @@ const DESCRIPTION_SNAPSHOT = [
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
   '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
+  '- Before a first call to an MCP tool whose parameters are not already in your context, load them with ToolSearch `select:<full name>`, the original name and not the script identifier; when they are already in your context, call the tool without a ToolSearch.',
   '- Each nested tool has a section in the description of the `code` parameter; one with no section there is still callable, and `ALL_TOOLS` is how to find it.',
 ].join('\n')
 
@@ -685,5 +686,64 @@ describe('the data task flag is checked with a message', () => {
 
   it('Proves C2: the data task alone has no error', () => {
     assert.equal(flagError(1, undefined, undefined, 'data'), undefined)
+  })
+})
+
+describe('an MCP tool section tells the model to load the arguments first', () => {
+  const callLine = (name: string): string => mcpSection({ name, description: 'Runs.' }).text.split('\n').at(-1) ?? ''
+
+  it('Proves C1: a name equal to its identifier is selected by that name', () => {
+    const line = callLine('mcp__plain__run')
+    assert.match(line, /ToolSearch `select:mcp__plain__run`/)
+    assert.match(line, /`tools\.mcp__plain__run\(args\)`/)
+    assert.match(line, /resolves to the tool's text\.$/)
+  })
+
+  it('Proves C1: a name that differs from its identifier is selected by the name, called by the identifier', () => {
+    const line = callLine('mcp__agent-memory__memory_write')
+    assert.match(line, /ToolSearch `select:mcp__agent-memory__memory_write`/)
+    assert.match(line, /`tools\.mcp__agent_memory__memory_write\(args\)`/)
+    assert.doesNotMatch(line, /select:mcp__agent_memory/)
+  })
+
+  it('Proves C1: the section and the globals state the rule as conditional on the parameters not being in context', () => {
+    assert.match(callLine('mcp__plain__run'), /^When the tool's parameters are not already in your context, load them with ToolSearch/)
+    const rule = describeCodemode().split('\n').filter(line => line.includes('ToolSearch'))
+    assert.match(rule[0] ?? '', /whose parameters are not already in your context/)
+    assert.match(rule[0] ?? '', /already in your context, call the tool without a ToolSearch\.$/)
+  })
+
+  it('Proves C1: no section keeps the open-object wording', () => {
+    for (const name of ['mcp__plain__run', 'mcp__a-b__c']) {
+      assert.doesNotMatch(mcpSection({ name, description: 'Runs.' }).text, /an open object of arguments/)
+    }
+  })
+
+  it('Proves C1: a name holding a backtick or a fence stays one section with no heading line and no fence', () => {
+    for (const name of ['mcp__s__a`b', 'mcp__s__a```b', 'mcp__s__a\n### x\n```js']) {
+      const lines = mcpSection({ name, description: 'Runs.' }).text.split('\n')
+      assert.ok(lines.length <= 3, `${lines.length} lines`)
+      assert.ok(lines[0]?.startsWith('### `'))
+      assert.ok(lines.slice(1).every(line => !line.startsWith('#') && !line.includes('```')))
+    }
+  })
+
+  it('Proves C2: the globals state the load rule once, with the original name', () => {
+    const rule = describeCodemode().split('\n').filter(line => line.includes('ToolSearch'))
+    assert.equal(rule.length, 1)
+    assert.match(rule[0] ?? '', /^- Before a first call to an MCP tool whose parameters are not already in your context, load them with ToolSearch `select:<full name>`/)
+  })
+
+  it('Proves C3: the longer call line still sits on the budget boundary and keeps the unlisted heading', () => {
+    const sections = [
+      mcpSection({ name: 'mcp__a__one', description: 'One.' }),
+      mcpSection({ name: 'mcp__a__two', description: 't'.repeat(400) }),
+    ]
+    const first = sections[0]
+    assert.ok(first !== undefined)
+    const cost = Math.ceil(first.text.length / 4)
+    assert.ok(renderSections(sections, cost).includes(first.text))
+    assert.ok(!renderSections(sections, cost - 1).includes(first.text))
+    assert.match(renderSections(sections, cost), /## a \(some tools not listed\)/)
   })
 })

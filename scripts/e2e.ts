@@ -110,7 +110,7 @@ type Scenario = {
   rules: { permissions: { allow: string[]; deny?: string[] } }
   mode?: string
   /** `fake` connects the stand-in MCP server; `none` runs strict with no server at all. */
-  mcp?: 'fake' | 'none'
+  mcp?: 'fake' | 'none' | 'sealed'
   /** Environment variables for this run only. */
   env?: Record<string, string>
   /** The script, given the throwaway file it may touch. */
@@ -124,7 +124,7 @@ type Scenario = {
   /** The tool whose call and result the run is judged on, when it is not the codemode tool. */
   resultOf?: string
   /** `calls` holds the name of every tool_use block of the run, in order; `results` the text of every tool_result block. */
-  checks: (text: string, file: string, code: string, calls: string[], results: string[]) => Check[]
+  checks: (text: string, file: string, code: string, calls: string[], results: string[], uses: Block[]) => Check[]
 }
 
 const read = (file: string): string | undefined => (existsSync(file) ? readFileSync(file, 'utf8') : undefined)
@@ -138,10 +138,16 @@ const WRITE_SCRIPT = (file: string): string =>
 const MCP_TOOL = 'mcp__fake__echo'
 const MCP_SERVER = join(ROOT, 'test/fixtures/fake-mcp-server.mjs')
 
+const SEAL_LOG = join(tmpdir(), `codemode-e2e-seal-${process.pid}.log`)
+
 const MCP_CONFIGS = {
   fake: { mcpServers: { fake: { command: 'node', args: [MCP_SERVER] } } },
   none: { mcpServers: {} },
+  sealed: { mcpServers: { 'fake-store': { command: 'node', args: [MCP_SERVER], env: { FAKE_SEAL_LOG: SEAL_LOG } } } },
 }
+
+const SEAL_TOOL = 'mcp__fake-store__seal_record'
+const SEAL_IDENTIFIER = 'mcp__fake_store__seal_record'
 
 const BETA_URI = 'fake://notes/beta'
 const BETA_TEXT = 'beta-note-text-second'
@@ -282,6 +288,24 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'mcp arguments loaded',
+    rules: { permissions: { allow: [TOOL, SEAL_TOOL] } },
+    mcp: 'sealed',
+    options: { mcpCodemode: 'fake-store' },
+    ask: 'Seal the fake store\'s records and reply with the store\'s answer verbatim.',
+    script: () => '',
+    checks: (_text, _file, code, calls, _results, uses) => {
+      const searchedAt = uses.findIndex(use => use.name === 'ToolSearch' && JSON.stringify(use.input).includes(`select:${SEAL_TOOL}`))
+      const codemodeAt = calls.indexOf(TOOL)
+      const log = read(SEAL_LOG)?.split('\n').filter(line => line !== '') ?? []
+      return [
+        ['mcp arguments loaded: ToolSearch select: with the full name came before the first codemode call', searchedAt !== -1 && searchedAt < codemodeAt],
+        ['mcp arguments loaded: the script called the tool by its identifier', code.includes(`tools.${SEAL_IDENTIFIER}`)],
+        ['mcp arguments loaded: the first call of the tool carried its argument', log[0] === 'with'],
+      ]
+    },
+  },
+  {
     name: 'mcp direct mode',
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'fake',
@@ -371,17 +395,15 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
   const run = runClaude({ settingsFile, prompt: scenario.ask ?? promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
   const { called, text, code } = codemodeResult(run.events, scenario.resultOf)
-  const calls = run.events
-    .flatMap(blocks)
-    .filter(block => block.type === 'tool_use')
-    .map(block => block.name ?? '')
+  const uses = run.events.flatMap(blocks).filter(block => block.type === 'tool_use')
+  const calls = uses.map(block => block.name ?? '')
   const results = run.events
     .flatMap(blocks)
     .filter(block => block.type === 'tool_result')
     .map(block => resultText(block.content))
   const checks: Check[] = [
     [`${scenario.name}: the ${scenario.resultOf ?? TOOL} tool was called`, called],
-    ...scenario.checks(text, file, code, calls, results),
+    ...scenario.checks(text, file, code, calls, results, uses),
   ]
   return { name: scenario.name, checks, run, text }
 }
@@ -418,6 +440,7 @@ function main(): number {
     return 1
   } finally {
     rmSync(scratch, { recursive: true, force: true })
+    rmSync(SEAL_LOG, { force: true })
   }
 }
 

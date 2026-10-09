@@ -2,7 +2,7 @@
 type: Issue
 title: The model writes a data-processing script in codemode instead of inline Python or Node in Bash, measured before and after a note on Bash
 description: Measures how often the model runs inline Python or Node through Bash, in a benchmark task and in the owner's own transcripts, then adds a note to Bash's description that points such scripts to codemode, and measures again.
-status: open
+status: closed
 timestamp: 2026-10-09T08:11:10Z
 ---
 

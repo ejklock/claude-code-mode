@@ -2,7 +2,7 @@
 type: Issue
 title: A codemode script reaches an MCP tool by the name the instructions line gives, and a script error reports its real cause
 description: The MCP instructions line names tools with the server's hyphen while the script's tools object uses underscores, and a script that throws while nested calls are pending reports an ENOENT on the bridge socket instead of the script's own error.
-status: open
+status: closed
 timestamp: 2026-10-09T08:11:10Z
 ---
 

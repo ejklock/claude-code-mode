@@ -2,7 +2,7 @@
 type: Issue
 title: An MCP tool's section in codemode tells the model to load the tool's arguments with ToolSearch before a first call
 description: Ends the guessing of an MCP tool's arguments inside codemode, which failed memory_write 231 times in 59 sessions; the mods API gives no input schema.
-status: open
+status: closed
 timestamp: 2026-10-09T08:56:26Z
 ---
 

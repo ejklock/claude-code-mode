@@ -7,6 +7,8 @@ import { createInterface } from 'node:readline'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { CodemodeBridge } from '../../hooks/bridge.ts'
+import type { BridgeHost, CodemodeOutcome } from '../../hooks/bridge.ts'
 import { ANSWER_PATH, EXPOSED_TOOLS, parseChildMessage, parseRunRequest } from '../../shared/protocol.ts'
 import type { CallAnswer, ChildMessage, McpTool, RunRequest } from '../../shared/protocol.ts'
 
@@ -319,5 +321,158 @@ describe('the codemode child keeps its output within the budget', () => {
     const outcome = await runChild(`text('z'.repeat(100))`, answerByTool)
     assert.equal(outcome.done.output, 'z'.repeat(100))
     assert.doesNotMatch(outcome.done.output, marked)
+  })
+})
+
+const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
+
+/** A host with inert defaults; a test overrides the parts it drives. */
+const makeHost = (overrides: Partial<BridgeHost>): BridgeHost => ({
+  pluginRoot: PLUGIN_ROOT,
+  spawn: () => {
+    throw new Error('this test gave the host no spawn')
+  },
+  callTool: async () => ({ result: 'unused', text: 'FILE-BODY' }) as Awaited<ReturnType<BridgeHost['callTool']>>,
+  listTools: async () => [],
+  post: async () => {
+    throw new Error('this test gave the host no post')
+  },
+  publish: async () => {},
+  now: async () => 1_000,
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+  ...overrides,
+})
+
+/** Runs the bridge over the real child; nested calls answer after `answerDelayMs`, by which time a failed script has taken the child down. */
+async function runBridge(code: string, answerDelayMs: number): Promise<CodemodeOutcome> {
+  const host = makeHost({
+    spawn: spawnRequest => {
+      const child = spawn(spawnRequest.argv[0] ?? 'node', spawnRequest.argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] })
+      child.stdin.end(spawnRequest.input ?? '')
+      const exited = new Promise<number | null>(resolve => child.on('close', resolve))
+      return (async function* () {
+        for await (const text of child.stdout) yield { stream: 'stdout' as const, text: String(text) }
+        return { code: await exited, signal: null }
+      })() as ReturnType<BridgeHost['spawn']>
+    },
+    callTool: async () => {
+      await new Promise(resolve => setTimeout(resolve, answerDelayMs))
+      return { result: 'unused', text: 'FILE-BODY' } as Awaited<ReturnType<BridgeHost['callTool']>>
+    },
+    post: (url, init) =>
+      new Promise((resolve, reject) => {
+        const req = request({ socketPath: init.socketPath, path: new URL(url).pathname, method: 'POST' }, res => {
+          res.resume()
+          res.on('end', () => resolve({ status: 204, ok: true, headers: {}, text: '' }))
+        })
+        req.on('error', reject)
+        req.end(init.body)
+      }),
+  })
+  return new CodemodeBridge(host, 20_000).run(code, 'run-1')
+}
+
+const failureOf = (outcome: CodemodeOutcome): string => {
+  assert.equal(outcome.ok, false)
+  return outcome.ok ? '' : outcome.error
+}
+
+describe('a script error with nested calls pending', () => {
+  const reads = (count: number): string =>
+    Array.from({ length: count }, (_, index) => `tools.Read({ file_path: '/f${index}' })`).join('; ')
+
+  for (const count of [1, 3]) {
+    it(`Proves C2: a ReferenceError after ${count} started call(s) leads the failure and the ledger lists every call`, async () => {
+      const failure = failureOf(await runBridge(`${reads(count)}; missingIdentifier`, 800))
+      const first = failure.split('\n')[0] ?? ''
+      assert.match(first, /ReferenceError/)
+      assert.match(first, /missingIdentifier/)
+      for (let id = 1; id <= count; id++) assert.match(failure, new RegExp(`#${id} Read`))
+      const late = failure.indexOf('could not reach the child')
+      assert.ok(late === -1 || late > failure.indexOf('ReferenceError'), 'a late answer led the failure')
+    })
+  }
+
+  it('Proves C2: a script that throws with no nested call ends with its message alone', async () => {
+    const failure = failureOf(await runBridge(`throw new Error('boom from script')`, 0))
+    assert.match(failure.split('\n')[0] ?? '', /boom from script/)
+    assert.doesNotMatch(failure, /could not reach the child/)
+  })
+
+  it('Proves C2: a script whose nested call succeeds on its own is unchanged', async () => {
+    const outcome = await runBridge(`text(await tools.Read({ file_path: '/f' }))`, 0)
+    assert.equal(outcome.ok, true)
+  })
+})
+
+type ScriptedEnd = 'closing-after-failure' | 'silent-alive' | 'exit-without-closing' | 'malformed-silent'
+
+const jsonLine = (message: ChildMessage): string => `${JSON.stringify(message)}\n`
+
+/**
+ * A bridge over a scripted child: it announces a socket and asks for one tool, and the
+ * answer POST always fails. Only after that failure is recorded does the child end as `end` says.
+ */
+async function runScripted(end: ScriptedEnd): Promise<{ outcome: CodemodeOutcome; elapsedMs: number }> {
+  let postFailed!: () => void
+  const failureRecorded = new Promise<void>(resolve => {
+    postFailed = resolve
+  })
+  const never = new Promise<never>(() => {})
+  const chunks = (async function* () {
+    yield { stream: 'stdout' as const, text: jsonLine({ type: 'listening', socketPath: '/scripted.sock' }) }
+    if (end !== 'malformed-silent') {
+      yield { stream: 'stdout' as const, text: jsonLine({ type: 'call', id: 1, tool: 'Read', input: { file_path: '/f' } }) }
+    }
+    if (end === 'malformed-silent') {
+      yield { stream: 'stdout' as const, text: 'this is not a protocol line\n' }
+      await never
+    }
+    await failureRecorded
+    await new Promise(resolve => setTimeout(resolve, 50))
+    if (end === 'silent-alive') await never
+    if (end === 'closing-after-failure') {
+      yield { stream: 'stdout' as const, text: jsonLine({ type: 'done', ok: false, error: 'ReferenceError: nope is not defined', output: '' }) }
+    }
+    return { code: 1, signal: null }
+  })()
+  const host = makeHost({
+    spawn: () => chunks as unknown as ReturnType<BridgeHost['spawn']>,
+    post: async () => {
+      postFailed()
+      throw new Error('socket hung up')
+    },
+  })
+  const started = Date.now()
+  const outcome = await new CodemodeBridge(host, 20_000).run('unused', 'run-1')
+  return { outcome, elapsedMs: Date.now() - started }
+}
+
+describe('a late-answer failure recorded before the closing line is read', () => {
+  it('Proves C3: the closing line that follows leads, and the delivery problem follows it', async () => {
+    const failure = failureOf((await runScripted('closing-after-failure')).outcome)
+    assert.match(failure.split('\n')[0] ?? '', /ReferenceError: nope is not defined/)
+    assert.ok(
+      failure.indexOf('could not reach the child') > failure.indexOf('ReferenceError'),
+      'the delivery problem did not follow the script error',
+    )
+  })
+
+  it('Proves C3: a child that stays silent and alive returns the delivery problem within the bound, not at the script timeout', async () => {
+    const { outcome, elapsedMs } = await runScripted('silent-alive')
+    assert.match(failureOf(outcome).split('\n')[0] ?? '', /could not reach the child: socket hung up/)
+    assert.ok(elapsedMs < 5_000, `waited ${elapsedMs} ms for a closing line that never came`)
+  })
+
+  it('Proves C3: a malformed child line stops the read at once, without the closing-line grace', async () => {
+    const { outcome, elapsedMs } = await runScripted('malformed-silent')
+    assert.match(failureOf(outcome).split('\n')[0] ?? '', /sent a malformed line: this is not a protocol line/)
+    assert.ok(elapsedMs < 1_000, `waited ${elapsedMs} ms after a malformed line`)
+  })
+
+  it('Proves C3: a child that exits with no closing line reports the delivery problem alone', async () => {
+    const failure = failureOf((await runScripted('exit-without-closing')).outcome)
+    assert.match(failure.split('\n')[0] ?? '', /could not reach the child: socket hung up/)
+    assert.doesNotMatch(failure, /ReferenceError/)
   })
 })

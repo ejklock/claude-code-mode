@@ -28,7 +28,12 @@ export type BridgeHost = {
   /** Applies a change to the runs the transcript draws from. */
   publish: (change: (runs: CodemodeRun[]) => CodemodeRun[]) => Promise<void>
   now: () => Promise<number>
+  /** Resolves after `ms` milliseconds; the hooks loader gives a module no timer of its own. */
+  sleep: (ms: number) => Promise<void>
 }
+
+/** How long a failed run waits for the child's closing line, so a script error is not lost to a late-answer failure. */
+export const CLOSING_GRACE_MS = 2000
 
 /** Runs kept in `$.state`: the transcript rarely draws more than the latest few. */
 export const RUN_LIMIT = 20
@@ -315,13 +320,11 @@ export class CodemodeBridge {
     const stream = this.host.spawn({ argv, input })
     const lines = new LineSplitter()
     try {
-      while (state.problem === undefined) {
+      while (state.closing === undefined || state.problem === undefined) {
         const next = await Promise.race([stream.next(), state.aborted])
         if (next === undefined) break
         if (next.done) return this.describeExit(next.value.code, next.value.signal)
-        const { stream: pipe, text } = next.value
-        if (pipe === 'stderr') state.stderr = (state.stderr + text).slice(-STDERR_TAIL_CHARS)
-        else for (const line of lines.push(text)) this.handleLine(line, state)
+        this.takeChunk(next.value, lines, state)
       }
       // Not awaited: a return() waits behind a read still pending on the child.
       stream.return({ code: null, signal: null }).catch(() => undefined)
@@ -330,6 +333,11 @@ export class CodemodeBridge {
       recordProblem(state, `the codemode child could not run: ${errorMessage(error)}`)
       return 'did not start'
     }
+  }
+
+  private takeChunk(chunk: ProcessSpawnChunk, lines: LineSplitter, state: RunState): void {
+    if (chunk.stream === 'stderr') state.stderr = (state.stderr + chunk.text).slice(-STDERR_TAIL_CHARS)
+    else for (const line of lines.push(chunk.text)) this.handleLine(line, state)
   }
 
   private describeExit(code: number | null, signal: string | null): string {
@@ -365,7 +373,9 @@ export class CodemodeBridge {
         socketPath,
       })
     } catch (error) {
-      recordProblem(state, `the answer to a nested call could not reach the child: ${errorMessage(error)}`)
+      // The child may be ending on a script error: the read goes on for its closing line, but only for the grace.
+      state.problem ??= `the answer to a nested call could not reach the child: ${errorMessage(error)}`
+      void this.host.sleep(CLOSING_GRACE_MS).then(state.abort, state.abort)
     }
   }
 
@@ -402,11 +412,13 @@ export class CodemodeBridge {
   }
 
   private failure(state: RunState, exit: string): string {
-    if (state.problem !== undefined) return state.problem
     if (state.closing?.ok === false) {
       const printed = state.closing.output === '' ? '' : `\n\nOutput before the failure:\n${state.closing.output}`
-      return `${state.closing.error}${printed}`
+      // A late answer that cannot reach the exited child is a symptom of the script's end, so it follows the cause.
+      const late = state.problem === undefined ? '' : `\n\n${state.problem}`
+      return `${state.closing.error}${printed}${late}`
     }
+    if (state.problem !== undefined) return state.problem
     const stderr = state.stderr.trim() === '' ? '' : `\n${state.stderr.trim()}`
     return `the codemode child ${exit} without a closing line${stderr}`
   }

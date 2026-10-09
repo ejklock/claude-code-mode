@@ -45,6 +45,7 @@ Settled with G, 2026-10-09:
 - **The name in the instruction:** the tool's full name as ToolSearch takes it (`mcp__agent-memory__memory_write`), not the script identifier (`mcp__agent_memory__memory_write`).
 - **Sequencing:** the slice touches `hooks/describe.ts`, so it waits until issue 0014 (not yet on this branch) lands, and rebases on it.
 - **The spike's code** (`hooks/schemas.ts`, its spec and `scripts/schema-probe.ts`) was removed: nothing in the engine feeds it. Its figures stay below.
+- **The rule is conditional**, in the section and in the globals: load the arguments with ToolSearch only when the tool's parameters are not already in context. Stated without the condition, the `mcp direct mode` e2e scenario, whose tool is loaded up front, failed once on a ToolSearch call before the tool. The condition lives in the wording, so `mcpSection` stays unaware of the exposure mode.
 
 ### Acceptance
 

@@ -90,6 +90,7 @@ export const register: Register = (on, options) => {
           await update($, RUNS, change)
         },
         now: () => $.clock.now(),
+        sleep: ms => $.clock.sleep(ms),
       },
       SCRIPT_TIMEOUT_MS,
     )

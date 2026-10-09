@@ -139,8 +139,14 @@ class CodemodeChild {
     const output = withinBudget(outputText(result), OUTPUT_BUDGET, spillToFile)
     return result.ok
       ? { type: 'done', ok: true, output }
-      : { type: 'done', ok: false, error: result.error.message, output }
+      : { type: 'done', ok: false, error: errorText(result.error), output }
   }
+}
+
+/** A script's own error type leads its message; the generic `Error` adds nothing, so its message stands alone. */
+function errorText(error: { kind: string; name?: string; message: string }): string {
+  const typed = error.kind === 'script' && error.name !== undefined && error.name !== 'Error'
+  return typed ? `${error.name}: ${error.message}` : error.message
 }
 
 await new CodemodeChild().run()

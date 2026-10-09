@@ -1,5 +1,6 @@
 import type { InvalidatableEventName, On, ToolInfo } from 'claude-code'
 
+import { toScriptIdentifier } from '../shared/identifier.ts'
 import { modeOf } from './exposure.ts'
 import type { Exposure } from './exposure.ts'
 
@@ -51,8 +52,8 @@ function instructionsLine(group: readonly string[], connected: readonly string[]
   for (const server of servers) {
     const inGroup = group.filter(tool => serverOf(tool) === server)
     const listed = connected.filter(tool => serverOf(tool) === server)
-    if (inGroup.length === listed.length) names.push(`${MCP_PREFIX}${server}__*`)
-    else names.push(...inGroup)
+    if (inGroup.length === listed.length) names.push(`${toScriptIdentifier(`${MCP_PREFIX}${server}__`)}*`)
+    else names.push(...inGroup.map(toScriptIdentifier))
   }
   return (
     `The tools ${names.join(', ')} run inside the codemode tool as \`tools.<name>(args)\`; ` +

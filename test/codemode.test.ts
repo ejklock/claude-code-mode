@@ -1543,3 +1543,41 @@ describe('the hidden mode, exposureSync', () => {
     expect(invalidated).toHaveLength(2)
   })
 })
+
+describe('the codemode mode, instructions line names', () => {
+  const MEMORY_READ: Listed = { name: 'mcp__agent-memory__memory_read', description: 'Reads.', mcp: true }
+  const MEMORY_WRITE: Listed = { name: 'mcp__agent-memory__memory_write', description: 'Writes.', mcp: true }
+  const lastLine = async ($: Engine): Promise<string> =>
+    ((await attach($, 'mcp_instructions_delta', 'x')).text ?? '').split('\n').at(-1) ?? ''
+
+  test('Proves C1: a hyphenated server with every tool in the group is named by the script-side wildcard', { options: { mcpCodemode: 'agent-memory' } }, async ($, on) => {
+    engineAttachments(on, [MEMORY_READ, MEMORY_WRITE])
+    const added = await lastLine($)
+    expect(added).toContain('mcp__agent_memory__*')
+    expect(added).not.toContain('mcp__agent-memory__*')
+  })
+
+  test('Proves C1: a hyphenated server with some tools in the group lists each by the script-side name', { options: { mcpCodemode: 'agent-memory__memory_read' } }, async ($, on) => {
+    engineAttachments(on, [MEMORY_READ, MEMORY_WRITE])
+    const added = await lastLine($)
+    expect(added).toContain('mcp__agent_memory__memory_read')
+    expect(added).not.toContain('mcp__agent-memory__')
+    expect(added).not.toContain('memory_write')
+  })
+
+  test('Proves C1: a server whose name needs no change is named as before', { options: { mcpCodemode: 'fake' } }, async ($, on) => {
+    engineAttachments(on, [ECHO])
+    expect(await lastLine($)).toContain('mcp__fake__*')
+  })
+
+  test('Proves C1: a dot or a space in the server name becomes the underscore the script sees', { options: { mcpCodemode: ['my.server', 'my server'] } }, async ($, on) => {
+    engineAttachments(on, [
+      { name: 'mcp__my.server__a', description: 'A.', mcp: true },
+      { name: 'mcp__my server__b', description: 'B.', mcp: true },
+    ])
+    const added = await lastLine($)
+    expect(added).toContain('mcp__my_server__*')
+    expect(added).not.toContain('my.server')
+    expect(added).not.toContain('my server')
+  })
+})

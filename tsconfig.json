@@ -5,5 +5,5 @@
     "typeRoots": ["./node_modules/@types"],
     "types": ["node"]
   },
-  "include": ["child", "shared", "test/node", "scripts"]
+  "include": ["child", "shared", "test/node", "scripts", ".claude-plugin/types"]
 }

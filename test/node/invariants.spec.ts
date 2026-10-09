@@ -18,7 +18,7 @@ import {
   toolDocs,
 } from '../../hooks/describe.ts'
 import type { Section } from '../../hooks/describe.ts'
-import { classifyMcpRun, classifyRun, flagError } from '../../scripts/adoption.ts'
+import { classifyDataRun, classifyMcpRun, classifyRun, flagError } from '../../scripts/adoption.ts'
 import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
 import type { ToolSpec } from '../../shared/protocol.ts'
 
@@ -591,5 +591,99 @@ describe('the sections are a function of the set of tools', () => {
     const text = codeDescription(tools)
     assert.equal(codeDescription([...tools].reverse()), text)
     assert.equal(codeDescription([...tools.slice(2), ...tools.slice(0, 2)]), text)
+  })
+})
+
+describe('a data adoption run reports how the model processed the files', () => {
+  const line = (event: Record<string, unknown>): string => `${JSON.stringify(event)}\n`
+  const bash = (command: string): string =>
+    line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } })
+  const codemode = line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', name: 'mcp__codemode__codemode', input: { code: 'text(1)' } }] },
+  })
+  const answer = (text: string): string => line({ type: 'result', result: text })
+  const GOOD = 'Top three: Carla 350, Bruno 275.5, Alice 200.'
+  const classify = (stdout: string): unknown => classifyDataRun({ status: 0, stdout })
+
+  it('Proves C2: codemode only reports usedCodemode, no inline kind and no Bash call', () => {
+    assert.deepEqual(classify(codemode + answer(GOOD)), {
+      ok: true,
+      tools: ['mcp__codemode__codemode'],
+      usedCodemode: true,
+      inlineKinds: [],
+      bashCalls: 0,
+      namesTopThree: true,
+    })
+  })
+
+  it('Proves C2: inline python only reports the kind and one Bash call', () => {
+    assert.deepEqual(classify(bash("python3 - <<'EOF'\nprint(1)\nEOF") + answer(GOOD)), {
+      ok: true,
+      tools: ['Bash'],
+      usedCodemode: false,
+      inlineKinds: ['python-stdin'],
+      bashCalls: 1,
+      namesTopThree: true,
+    })
+  })
+
+  it('Proves C2: both in one run report both facts', () => {
+    const outcome = classify(codemode + bash('node -e "1"') + bash('ls') + answer(GOOD))
+    assert.deepEqual(outcome, {
+      ok: true,
+      tools: ['mcp__codemode__codemode', 'Bash', 'Bash'],
+      usedCodemode: true,
+      inlineKinds: ['node-e'],
+      bashCalls: 2,
+      namesTopThree: true,
+    })
+  })
+
+  it('Proves C2: Bash without an inline script counts the call and no kind', () => {
+    const outcome = classify(bash('cat orders/1.json') + answer(GOOD)) as { inlineKinds: string[]; bashCalls: number }
+    assert.deepEqual([outcome.inlineKinds, outcome.bashCalls], [[], 1])
+  })
+
+  it('Proves C2: no tool call reports nothing used', () => {
+    assert.deepEqual(classify(answer(GOOD)), {
+      ok: true,
+      tools: [],
+      usedCodemode: false,
+      inlineKinds: [],
+      bashCalls: 0,
+      namesTopThree: true,
+    })
+  })
+
+  it('Proves C2: a malformed event line is skipped', () => {
+    const outcome = classify(`{not json\n${bash('python3 -c x')}${answer(GOOD)}`) as { inlineKinds: string[] }
+    assert.deepEqual(outcome.inlineKinds, ['python-c'])
+  })
+
+  it('Proves C2: an answer missing one of the top three does not name them', () => {
+    const outcome = classify(codemode + answer('Top: Carla and Bruno.')) as { namesTopThree: boolean }
+    assert.equal(outcome.namesTopThree, false)
+  })
+
+  it('Proves C2: a run without a result event is invalid', () => {
+    assert.deepEqual(classifyDataRun({ status: 0, stdout: codemode }), {
+      ok: false,
+      reason: 'the stream has no result event',
+    })
+  })
+})
+
+describe('the data task flag is checked with a message', () => {
+  it('Proves C2: an unknown task names data', () => {
+    assert.equal(flagError(1, undefined, undefined, 'bogus'), '--task needs one of: data')
+  })
+
+  it('Proves C2: the task excludes the mcp mode', () => {
+    assert.equal(flagError(1, 'none', undefined, 'data'), '--task and --mcp-mode exclude each other')
+  })
+
+  it('Proves C2: the data task alone has no error', () => {
+    assert.equal(flagError(1, undefined, undefined, 'data'), undefined)
   })
 })

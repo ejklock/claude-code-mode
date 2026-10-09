@@ -7,6 +7,7 @@
 * [0003 — The transcript draws a codemode call as its highlighted script, its nested calls live, and a summary](0003-the-transcript-draws-a-codemode-call-as-its-highlighted-script-its-nested-calls-live-and-a-summary.md) - open
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
 * [0012 — A codemode result over a size budget returns its head and tail to the model and keeps the whole output in a file](0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md) - open
+* [0013 — The model writes a data-processing script in codemode instead of inline Python or Node in Bash, measured before and after a note on Bash](0013-the-model-writes-a-data-processing-script-in-codemode-instead-of-inline-python-or-node-in-bash-measured-before-and-after-a-note-on-bash.md) - open
 * [0014 — A codemode script reaches an MCP tool by the name the instructions line gives, and a script error reports its real cause](0014-a-codemode-script-reaches-an-mcp-tool-by-the-name-the-instructions-line-gives-and-a-script-error-reports-its-real-cause.md) - open
 
 ## Closed

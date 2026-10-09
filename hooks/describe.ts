@@ -61,6 +61,7 @@ const GLOBALS = [
   '- `exit()` ends the script successfully, keeping its output.',
   '- `ALL_TOOLS` lists `{ name, description }` for each tool a script can call.',
   '- Connected MCP tools are callable too, as `tools.<name>(args)` by their full `mcp__server__tool` name, and listed in `ALL_TOOLS`.',
+  '- Before a first call to an MCP tool whose parameters are not already in your context, load them with ToolSearch `select:<full name>`, the original name and not the script identifier; when they are already in your context, call the tool without a ToolSearch.',
   '- Each nested tool has a section in the description of the `code` parameter; one with no section there is still callable, and `ALL_TOOLS` is how to find it.',
 ].join('\n')
 
@@ -127,7 +128,7 @@ export function mcpSection(tool: McpTool): Section {
   const id = toIdentifier(tool.name)
   const heading = id === tool.name ? `### \`${id}\`` : `### \`${id}\` (\`${inert(tool.name)}\`)`
   const description = inert(tool.description)
-  const call = `\`tools.${id}(args)\` takes an open object of arguments, and resolves to the tool's text.`
+  const call = `When the tool's parameters are not already in your context, load them with ToolSearch \`select:${inert(tool.name)}\`; \`tools.${id}(args)\` resolves to the tool's text.`
   const lines = [heading, ...(description === '' ? [] : [description]), call]
   return { name: tool.name, server: serverOf(tool.name), text: lines.join('\n') }
 }

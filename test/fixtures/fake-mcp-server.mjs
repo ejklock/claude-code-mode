@@ -43,6 +43,15 @@ function createRecord(id, name) {
   send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], ...(failed ? { isError: true } : {}) } })
 }
 
+// `seal_record` needs a `seal` its description never names: a call without it is an error result.
+// With FAKE_SEAL_LOG set, every call is logged `with` or `without` the argument, in order.
+function sealRecord(id, seal) {
+  const given = typeof seal === 'string' && seal !== ''
+  if (process.env.FAKE_SEAL_LOG) appendFileSync(process.env.FAKE_SEAL_LOG, `${given ? 'with' : 'without'}\n`)
+  const text = given ? `sealed with ${seal}` : 'missing required argument'
+  send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], ...(given ? {} : { isError: true }) } })
+}
+
 function handle({ id, method, params }) {
   if (method === 'initialize') {
     return send({
@@ -68,14 +77,17 @@ function handle({ id, method, params }) {
   if (method === 'tools/list') {
     const inputSchema = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }
     const recordSchema = { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
+    const sealSchema = { type: 'object', properties: { seal: { type: 'string', description: 'The seal to apply; any text is accepted.' } }, required: ['seal'] }
     const tools = [
       { name: 'echo', description: 'Echoes the text back.', inputSchema },
       { name: 'create_record', description: 'Creates a record in the fake store; takes { name }.', inputSchema: recordSchema },
       { name: 'list_records', description: 'Lists the names of the records in the fake store.', inputSchema: { type: 'object', properties: {} } },
+      { name: 'seal_record', description: 'Seals the records of the fake store.', inputSchema: sealSchema },
     ]
     return send({ jsonrpc: '2.0', id, result: { tools } })
   }
   if (method === 'tools/call' && params?.name === 'list_records') return listRecords(id)
+  if (method === 'tools/call' && params?.name === 'seal_record') return sealRecord(id, params.arguments?.seal)
   if (method === 'tools/call' && params?.name === 'create_record') return createRecord(id, params.arguments?.name ?? '')
   if (method === 'tools/call') {
     const text = `fake-echo: ${params?.arguments?.text ?? ''}`

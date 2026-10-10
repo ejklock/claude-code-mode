@@ -7,6 +7,7 @@
 * [0003 — The transcript draws a codemode call as its highlighted script, its nested calls live, and a summary](0003-the-transcript-draws-a-codemode-call-as-its-highlighted-script-its-nested-calls-live-and-a-summary.md) - open
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
 * [0012 — A codemode result over a size budget returns its head and tail to the model and keeps the whole output in a file](0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md) - open
+* [0016 — The codemode tool declares the four MCP tool hints once the mods API takes them, and a check tells the day it does](0016-the-codemode-tool-declares-the-four-mcp-tool-hints-once-the-mods-api-takes-them-and-a-check-tells-the-day-it-does.md) - open
 
 ## Closed
 

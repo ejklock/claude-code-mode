@@ -170,6 +170,74 @@ describe('the two RUNS atoms name one state value', () => {
   })
 })
 
+const TOOL_SPEC_TYPE = /export type ToolSpec = \{[\s\S]*?\n {2}\};/
+const HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const
+
+/** The `ToolSpec` block of the installed build's declarations: what `$.tool.register` takes. */
+function toolSpecType(typesText: string): string | undefined {
+  const match = TOOL_SPEC_TYPE.exec(typesText)
+  return match === null ? undefined : match[0]
+}
+
+/**
+ * Why the registration and the build disagree on the four MCP hints; `undefined`
+ * when they agree. A build takes the hints it names, or all four when it names
+ * only `annotations`; the engine drops a hint the build does not take (issue 0016).
+ */
+function hintsProblem(typesText: string, registerSource: string): string | undefined {
+  const spec = toolSpecType(typesText)
+  if (spec === undefined) return 'the declarations hold no ToolSpec type'
+  const named = HINTS.filter(hint => spec.includes(hint))
+  const taken = named.length === 0 && spec.includes('annotations') ? [...HINTS] : named
+  const declared = HINTS.filter(hint => registerSource.includes(hint))
+  if (taken.length === 0 && declared.length > 0) {
+    return `register.ts declares ${declared.join(', ')} but this build's ToolSpec takes no hint, so the engine drops them`
+  }
+  const missing = taken.filter(hint => !declared.includes(hint))
+  if (missing.length === 0) return undefined
+  return `this build's ToolSpec takes ${taken.join(', ')} and register.ts declares none of ${missing.join(', ')}: declare them (issue 0016)`
+}
+
+describe('the codemode tool declares the MCP hints the build takes', () => {
+  const declarations = (fields: string): string =>
+    `declare module 'claude-code' {\n  export type ToolSpec = {\n      name: string;\n${fields}  };\n  export type Other = {\n      readOnlyHint?: boolean;\n  };\n}\n`
+  const registration = (hints: readonly string[]): string =>
+    `await $.tool.register({ name: TOOL_NAME, description: describeCodemode()${hints.map(hint => `, ${hint}: false`).join('')} })\n`
+  const allFour = HINTS.map(hint => `      ${hint}?: boolean;\n`).join('')
+
+  it('Proves C1: the real tree passes', () => {
+    const types = readFileSync(join(ROOT, '.claude-plugin/types/claude-code/index.d.ts'), 'utf8')
+    const register = readFileSync(join(ROOT, 'hooks/register.ts'), 'utf8')
+    assert.notEqual(toolSpecType(types), undefined)
+    assert.equal(hintsProblem(types, register), undefined)
+  })
+
+  it('Proves C1: a build that takes all four and a registration with none fails naming the issue', () => {
+    assert.match(hintsProblem(declarations(allFour), registration([])) ?? '', /declares none of readOnlyHint, destructiveHint, idempotentHint, openWorldHint.*issue 0016/)
+  })
+
+  it('Proves C1: a build that names only annotations expects all four', () => {
+    assert.match(hintsProblem(declarations('      annotations?: ToolAnnotations;\n'), registration(['readOnlyHint'])) ?? '', /declares none of destructiveHint, idempotentHint, openWorldHint/)
+  })
+
+  it('Proves C1: a build that takes all four and a registration with all four passes', () => {
+    assert.equal(hintsProblem(declarations(allFour), registration(HINTS)), undefined)
+  })
+
+  it('Proves C1: a build that takes two and a registration with those two passes', () => {
+    const two = '      readOnlyHint?: boolean;\n      destructiveHint?: boolean;\n'
+    assert.equal(hintsProblem(declarations(two), registration(['readOnlyHint', 'destructiveHint'])), undefined)
+  })
+
+  it('Proves C1: a registration with hints against a build that takes none fails', () => {
+    assert.match(hintsProblem(declarations(''), registration(['readOnlyHint'])) ?? '', /takes no hint, so the engine drops them/)
+  })
+
+  it('Proves C1: declarations with no ToolSpec fail', () => {
+    assert.match(hintsProblem('declare module "claude-code" {}', registration([])) ?? '', /no ToolSpec type/)
+  })
+})
+
 describe('the pi-codemode pin is exact', () => {
   const manifest = (version: string): string =>
     JSON.stringify({ dependencies: { [PINNED_PACKAGE]: version } })

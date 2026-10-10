@@ -86,6 +86,7 @@ sequenceDiagram
 - **The tool:** the mod registers the tool, which the model sees as `mcp__codemode__codemode`.
 - **Separate process:** a mod's hooks module has no WebAssembly and no `eval`. So each script runs in a short-lived Node child process that hosts `pi-codemode`, pinned to an exact version.
 - **Permissions:** every nested call runs through `$.tool.call`, never `$.mcp.call`. Your allow and deny rules, permission prompts and `PreToolUse` hooks see each one.
+- **Tool hints:** read as an MCP tool, `codemode` is not read-only, may be destructive, is not idempotent and is open-world, because a script does whatever its nested calls do. These are the MCP defaults for an undeclared tool, and the mods API (`$.tool.register`, builds 2.1.291 to 2.1.296) takes no annotations yet, so the tool declares none; a check in the test suite fails on the first build whose declarations take them ([issue 0016](docs/issues/0016-the-codemode-tool-declares-the-four-mcp-tool-hints-once-the-mods-api-takes-them-and-a-check-tells-the-day-it-does.md)). The warning a host would base on those hints happens here per nested call, at its own permission check.
 - **Denials:** a denied or failed call throws an `Error` inside the script, and the script can catch it and continue.
 
 ## Requirements

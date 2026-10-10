@@ -1,6 +1,6 @@
 {
   "name": "codemode",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "One codemode tool: the model writes a script that calls the session's tools, and only the script's output returns.",
   "author": { "name": "Evaldo Klock" },
   "homepage": "https://github.com/ejklock/claude-code-mode",

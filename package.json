@@ -1,6 +1,6 @@
 {
   "name": "claude-code-mode",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "test": "node --test test/node/budget.spec.ts test/node/child.spec.ts test/node/exposure.spec.ts test/node/identifier.spec.ts test/node/inline-script.spec.ts test/node/invariants.spec.ts test/node/overhead.spec.ts test/node/partial.spec.ts test/node/savings.spec.ts test/node/transcripts.spec.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-codemode": "1.0.4"
+    "@earendil-works/pi-codemode": "1.1.0"
   },
   "devDependencies": {
     "@types/node": "26.6.4",

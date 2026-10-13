@@ -18,7 +18,7 @@ import {
   toolDocs,
 } from '../../hooks/describe.ts'
 import type { Section } from '../../hooks/describe.ts'
-import { classifyDataRun, classifyMcpRun, classifyRun, flagError } from '../../scripts/adoption.ts'
+import { EDIT_SOURCES, classifyDataRun, classifyEditRun, classifyMcpRun, classifyRun, flagError } from '../../scripts/adoption.ts'
 import { EXPOSED_TOOLS, TOOL_SPECS, declarationOf, inputSchemaOf } from '../../shared/protocol.ts'
 import type { ToolSpec } from '../../shared/protocol.ts'
 
@@ -745,7 +745,7 @@ describe('a data adoption run reports how the model processed the files', () => 
 
 describe('the data task flag is checked with a message', () => {
   it('Proves C2: an unknown task names data', () => {
-    assert.equal(flagError(1, undefined, undefined, 'bogus'), '--task needs one of: data')
+    assert.equal(flagError(1, undefined, undefined, 'bogus'), '--task needs one of: data, edit')
   })
 
   it('Proves C2: the task excludes the mcp mode', () => {
@@ -813,5 +813,128 @@ describe('an MCP tool section tells the model to load the arguments first', () =
     assert.ok(renderSections(sections, cost).includes(first.text))
     assert.ok(!renderSections(sections, cost - 1).includes(first.text))
     assert.match(renderSections(sections, cost), /## a \(some tools not listed\)/)
+  })
+})
+
+describe('an edit adoption run reports how the model renamed the constant', () => {
+  const line = (event: Record<string, unknown>): string => `${JSON.stringify(event)}\n`
+  const use = (name: string, input: Record<string, unknown>): string =>
+    line({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } })
+  const done = line({ type: 'result', result: 'Changed four files.' })
+  const roots: string[] = []
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true })
+  })
+
+  const fixture = (): string => {
+    const root = mkdtempSync(join(tmpdir(), 'edit-fixture-'))
+    roots.push(root)
+    for (const [path, source] of Object.entries(EDIT_SOURCES)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true })
+      writeFileSync(join(root, path), source)
+    }
+    return root
+  }
+  const renameIn = (root: string): void => {
+    for (const path of Object.keys(EDIT_SOURCES)) {
+      const file = join(root, path)
+      writeFileSync(file, readFileSync(file, 'utf8').replaceAll('MAX_RETRIES', 'RETRY_LIMIT'))
+    }
+  }
+  const unused = Object.keys(EDIT_SOURCES).filter(path => !EDIT_SOURCES[path]?.includes('MAX_RETRIES'))
+  const classify = (stdout: string, root: string, status = 0): unknown => classifyEditRun({ status, stdout }, root)
+
+  it('Proves C2: the fixture has five files, four using the constant', () => {
+    assert.equal(Object.keys(EDIT_SOURCES).length, 5)
+    assert.equal(unused.length, 1)
+    assert.ok(Object.keys(EDIT_SOURCES).every(path => path.startsWith('src/') && path.endsWith('.ts')))
+  })
+
+  it('Proves C2: a codemode-only run is correct with no direct or Bash edit', () => {
+    const root = fixture()
+    renameIn(root)
+    assert.deepEqual(classify(use('mcp__codemode__codemode', { code: 'x' }) + done, root), {
+      ok: true,
+      tools: ['mcp__codemode__codemode'],
+      usedCodemode: true,
+      directEdits: 0,
+      bashEdits: 0,
+      correct: true,
+    })
+  })
+
+  it('Proves C2: a direct-Edit-only run counts Edit and Write calls', () => {
+    const root = fixture()
+    renameIn(root)
+    const stdout = use('Edit', { file_path: 'a' }) + use('Edit', { file_path: 'b' }) + use('Write', { file_path: 'c' }) + done
+    assert.deepEqual(classify(stdout, root), {
+      ok: true,
+      tools: ['Edit', 'Edit', 'Write'],
+      usedCodemode: false,
+      directEdits: 3,
+      bashEdits: 0,
+      correct: true,
+    })
+  })
+
+  it('Proves C2: Bash calls that edit files are counted, others are not', () => {
+    const root = fixture()
+    renameIn(root)
+    const stdout =
+      use('Bash', { command: "sed -i '' 's/MAX_RETRIES/RETRY_LIMIT/g' src/a.ts" }) +
+      use('Bash', { command: "perl -pi -e 's/A/B/' src/b.ts" }) +
+      use('Bash', { command: "cat > src/c.ts <<'EOF'\nx\nEOF" }) +
+      use('Bash', { command: 'echo y >> src/d.ts' }) +
+      use('Bash', { command: 'grep -rn MAX_RETRIES src' }) +
+      use('Bash', { command: 'sed -n 1,5p src/a.ts' }) +
+      done
+    const outcome = classify(stdout, root) as { bashEdits: number; directEdits: number }
+    assert.deepEqual([outcome.bashEdits, outcome.directEdits], [4, 0])
+  })
+
+  it('Proves C2: a leftover MAX_RETRIES is not correct', () => {
+    const root = fixture()
+    renameIn(root)
+    const user = Object.keys(EDIT_SOURCES).find(path => EDIT_SOURCES[path]?.includes('MAX_RETRIES')) as string
+    writeFileSync(join(root, user), `${readFileSync(join(root, user), 'utf8')}// MAX_RETRIES\n`)
+    assert.equal((classify(done, root) as { correct: boolean }).correct, false)
+  })
+
+  it('Proves C2: touching the file that does not use the constant is not correct', () => {
+    const root = fixture()
+    renameIn(root)
+    const other = unused[0] as string
+    writeFileSync(join(root, other), `${readFileSync(join(root, other), 'utf8')}// touched\n`)
+    assert.equal((classify(done, root) as { correct: boolean }).correct, false)
+  })
+
+  it('Proves C2: an untouched fixture is not correct', () => {
+    assert.equal((classify(done, fixture()) as { correct: boolean }).correct, false)
+  })
+
+  it('Proves C2: a deleted fixture file is not correct and does not throw', () => {
+    const root = fixture()
+    renameIn(root)
+    rmSync(join(root, unused[0] as string))
+    assert.equal((classify(done, root) as { correct: boolean }).correct, false)
+  })
+
+  it('Proves C2: a non-zero exit or a missing result event is invalid', () => {
+    const root = fixture()
+    assert.deepEqual(classify(done, root, 1), { ok: false, reason: 'exit status 1' })
+    assert.deepEqual(classify(use('Edit', {}), root), { ok: false, reason: 'the stream has no result event' })
+  })
+
+  it('Proves C2: --task takes data and edit, and --permission-mode takes auto, default and acceptEdits', () => {
+    assert.equal(flagError(1, undefined, undefined, 'edit'), undefined)
+    assert.equal(flagError(1, undefined, undefined, 'data'), undefined)
+    assert.equal(flagError(1, undefined, undefined, 'bogus'), '--task needs one of: data, edit')
+    for (const mode of ['auto', 'default', 'acceptEdits']) {
+      assert.equal(flagError(1, undefined, undefined, 'edit', mode), undefined)
+    }
+    assert.equal(
+      flagError(1, undefined, undefined, 'edit', 'plan'),
+      '--permission-mode needs one of: auto, default, acceptEdits',
+    )
   })
 })

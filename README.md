@@ -102,7 +102,7 @@ Run one command:
 curl -fsSL https://raw.githubusercontent.com/ejklock/claude-code-mode/main/install.sh | sh
 ```
 
-The script adds the marketplace, installs the plugin, and installs its dependency. It is safe to run again; a second run updates the plugin.
+The script adds the marketplace, installs the plugin, and installs its dependency. It is safe to run again; a second run updates the plugin. If a marketplace named `codemode` is already registered, for example pinned to a tag in your `settings.json`, the script installs from it and says so.
 
 To choose where the plugin is installed, set `SCOPE` to `user` (the default), `project` or `local`:
 

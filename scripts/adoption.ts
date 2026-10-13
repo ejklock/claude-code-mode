@@ -8,9 +8,11 @@
  *   node scripts/adoption.ts --runs 5 --mcp-mode codemode|none   (an MCP task on the stand-in server)
  *   node scripts/adoption.ts --runs 5 --mcp-mode none --echoes 1   (the MCP task asks for one echo, not three; default 3)
  *   node scripts/adoption.ts --runs 5 --task data   (a data task: codemode versus an inline script in Bash)
+ *   node scripts/adoption.ts --runs 5 --task edit   (a rename across files: codemode versus Edit or a shell edit)
+ *   node scripts/adoption.ts --runs 5 --task edit --permission-mode auto   (auto, default or acceptEdits, passed to claude)
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -33,7 +35,8 @@ const MCP_MODES = ['codemode', 'none']
 
 const DATA_PROMPT =
   'The orders folder holds one JSON file per order, each with a customer and a total. Report the total per customer and the three customers with the highest totals.'
-const DATA_TASKS = ['data']
+const TASKS = ['data', 'edit']
+const PERMISSION_MODES = ['auto', 'default', 'acceptEdits']
 const DATA_RULES = { permissions: { allow: ['Read', 'Glob', 'Bash', TOOL] } }
 /** Totals: Carla 350, Bruno 275.5, Alice 200, Diego 150, Elena 40, Frida 10. */
 const DATA_ORDERS: Array<[string, number]> = [
@@ -41,6 +44,24 @@ const DATA_ORDERS: Array<[string, number]> = [
   ['Elena', 15], ['Carla', 50], ['Diego', 90], ['Elena', 25], ['Frida', 10], ['Bruno', 30],
 ]
 const DATA_TOP_THREE = ['Carla', 'Bruno', 'Alice']
+
+const EDIT_PROMPT =
+  'Rename the constant MAX_RETRIES to RETRY_LIMIT everywhere it is used in this project, then report which files changed.'
+const EDIT_RULES = { permissions: { allow: ['Read', 'Edit', 'Write', 'Bash', TOOL] } }
+const OLD_NAME = 'MAX_RETRIES'
+const NEW_NAME = 'RETRY_LIMIT'
+/** Four files use the constant (declared in config, imported in three); logger does not. */
+export const EDIT_SOURCES: Record<string, string> = {
+  'src/config.ts': 'export const MAX_RETRIES = 3\nexport const TIMEOUT_MS = 5000\n',
+  'src/http.ts':
+    "import { MAX_RETRIES } from './config.ts'\nexport const canRetry = (failures: number): boolean => failures < MAX_RETRIES\n",
+  'src/queue.ts':
+    "import { MAX_RETRIES } from './config.ts'\nexport const giveUp = (tries: number): boolean => tries >= MAX_RETRIES\n",
+  'src/worker.ts':
+    "import { MAX_RETRIES } from './config.ts'\nexport const describeLimit = (): string => `at most ${MAX_RETRIES} tries`\n",
+  'src/logger.ts': 'export const log = (line: string): void => console.log(line)\n',
+}
+const SHELL_EDIT = [/\bsed\b[^;&|\n]*\s-[a-zA-Z]*i/, /\bperl\b[^;&|\n]*\s-[a-zA-Z]*i/, />>?\s*\S*src\//, /\btee\b[^;&|\n]*\bsrc\//]
 
 const RULES = {
   permissions: { allow: ['Read', 'Bash(git ls-files:*)', 'Bash(cat:*)', TOOL] },
@@ -145,6 +166,34 @@ export function classifyDataRun(run: SpawnOutcome): DataOutcome {
   }
 }
 
+export type EditOutcome =
+  | { ok: true; tools: string[]; usedCodemode: boolean; directEdits: number; bashEdits: number; correct: boolean }
+  | { ok: false; reason: string }
+
+function renamedCorrectly(repo: string): boolean {
+  return Object.entries(EDIT_SOURCES).every(([path, original]) => {
+    const file = join(repo, path)
+    if (!existsSync(file)) return false
+    const now = readFileSync(file, 'utf8')
+    if (now.includes(OLD_NAME)) return false
+    return original.includes(OLD_NAME) ? now.includes(NEW_NAME) : now === original
+  })
+}
+
+/** Whether the model renamed the constant with codemode, direct Edit and Write calls, or a shell edit, and whether the files on disk are right. */
+export function classifyEditRun(run: SpawnOutcome, repo: string): EditOutcome {
+  const { outcome: base, events } = inspectRun(run)
+  if (!base.ok) return base
+  return {
+    ok: true,
+    tools: base.tools,
+    usedCodemode: base.usedCodemode,
+    directEdits: base.tools.filter(name => name === 'Edit' || name === 'Write').length,
+    bashEdits: bashCommands(events).filter(command => SHELL_EDIT.some(pattern => pattern.test(command))).length,
+    correct: renamedCorrectly(repo),
+  }
+}
+
 /** A run is valid only when claude spawned, exited 0 and the stream ended with a result event. */
 export function classifyRun(run: SpawnOutcome): RunOutcome {
   return inspectRun(run).outcome
@@ -230,6 +279,41 @@ function runOnce(pluginDir: string, repo: string, settingsFile: string, task: Ta
   return { error: run.error, status: run.status, stdout: run.stdout ?? '' }
 }
 
+function editTask(repo: string): Task {
+  buildTaskRepo(repo, EDIT_SOURCES)
+  return { prompt: EDIT_PROMPT, flags: [], settings: EDIT_RULES }
+}
+
+function resetRepo(repo: string): void {
+  execFileSync('git', ['checkout', '--quiet', '--', '.'], { cwd: repo, stdio: 'ignore' })
+}
+
+/** Prints one edit run's line. */
+function reportEdit(run: number, outcome: EditOutcome): void {
+  if (!outcome.ok) {
+    console.log(`run ${run}: failed (${outcome.reason})`)
+    return
+  }
+  const result = outcome.correct ? 'rename correct' : 'rename wrong'
+  console.log(
+    `run ${run}: codemode ${outcome.usedCodemode}, direct edits ${outcome.directEdits}, bash edits ${outcome.bashEdits}, ${result}`,
+  )
+}
+
+function measureEdit(runs: number, once: () => EditOutcome): number {
+  const outcomes = Array.from({ length: runs }, (_, index) => {
+    const outcome = once()
+    reportEdit(index + 1, outcome)
+    return outcome
+  })
+  const valid = outcomes.flatMap(outcome => (outcome.ok ? [outcome] : []))
+  const count = (test: (outcome: (typeof valid)[number]) => boolean): number => valid.filter(test).length
+  console.log(
+    `codemode ${count(o => o.usedCodemode)}, direct Edit or Write ${count(o => o.directEdits > 0)}, shell edit in Bash ${count(o => o.bashEdits > 0)}, correct ${count(o => o.correct)} of ${valid.length} valid runs (${runs - valid.length} failed)`,
+  )
+  return runs - valid.length
+}
+
 function mcpTask(mode: string, scratch: string, echoes: string): Task {
   const mcpConfig = join(scratch, 'mcp.json')
   writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { fake: { command: 'node', args: [MCP_SERVER] } } }))
@@ -312,14 +396,44 @@ function measure(runs: number, once: () => RunOutcome | McpOutcome, mcp: boolean
 }
 
 /** The message for a bad flag combination, or undefined when the flags are usable. */
-export function flagError(runs: number, mode: string | undefined, echoes: string | undefined, task?: string): string | undefined {
-  if (!Number.isInteger(runs) || runs < 1) return '--runs needs a positive integer'
-  if (task !== undefined && !DATA_TASKS.includes(task)) return `--task needs one of: ${DATA_TASKS.join(', ')}`
-  if (task !== undefined && mode !== undefined) return '--task and --mcp-mode exclude each other'
-  if (mode !== undefined && !MCP_MODES.includes(mode)) return `--mcp-mode needs one of: ${MCP_MODES.join(', ')}`
-  if (echoes !== undefined && mode === undefined) return '--echoes only applies with --mcp-mode'
-  if (echoes !== undefined && !MCP_ECHOES.includes(echoes)) return `--echoes needs one of: ${MCP_ECHOES.join(', ')}`
-  return undefined
+export function flagError(
+  runs: number,
+  mode: string | undefined,
+  echoes: string | undefined,
+  task?: string,
+  permissionMode?: string,
+): string | undefined {
+  const notIn = (value: string | undefined, allowed: string[]): boolean => value !== undefined && !allowed.includes(value)
+  const problems: Array<[boolean, string]> = [
+    [!Number.isInteger(runs) || runs < 1, '--runs needs a positive integer'],
+    [notIn(task, TASKS), `--task needs one of: ${TASKS.join(', ')}`],
+    [task !== undefined && mode !== undefined, '--task and --mcp-mode exclude each other'],
+    [notIn(mode, MCP_MODES), `--mcp-mode needs one of: ${MCP_MODES.join(', ')}`],
+    [notIn(permissionMode, PERMISSION_MODES), `--permission-mode needs one of: ${PERMISSION_MODES.join(', ')}`],
+    [echoes !== undefined && mode === undefined, '--echoes only applies with --mcp-mode'],
+    [notIn(echoes, MCP_ECHOES), `--echoes needs one of: ${MCP_ECHOES.join(', ')}`],
+  ]
+  return problems.find(([failed]) => failed)?.[1]
+}
+
+function buildTask(name: string | undefined, mode: string | undefined, echoes: string, scratch: string, repo: string): Task {
+  if (mode !== undefined) return mcpTask(mode, scratch, echoes)
+  if (name === 'data') return dataTask(repo)
+  if (name === 'edit') return editTask(repo)
+  return tsTask(repo)
+}
+
+/** Runs the measurement for the chosen task and returns how many runs failed. */
+function measureTask(name: string | undefined, mode: string | undefined, runs: number, spawn: () => SpawnOutcome, repo: string): number {
+  if (name === 'data') return measureData(runs, () => classifyDataRun(spawn()))
+  if (name === 'edit') {
+    return measureEdit(runs, () => {
+      resetRepo(repo)
+      return classifyEditRun(spawn(), repo)
+    })
+  }
+  const classify = mode === undefined ? classifyRun : classifyMcpRun
+  return measure(runs, () => classify(spawn()), mode !== undefined)
 }
 
 function main(): number {
@@ -330,11 +444,12 @@ function main(): number {
       'mcp-mode': { type: 'string' },
       echoes: { type: 'string' },
       task: { type: 'string' },
+      'permission-mode': { type: 'string' },
     },
   })
   const runs = Number(values.runs)
   const mode = values['mcp-mode']
-  const error = flagError(runs, mode, values.echoes, values.task)
+  const error = flagError(runs, mode, values.echoes, values.task, values['permission-mode'])
   if (error !== undefined) {
     console.error(error)
     return 2
@@ -343,10 +458,9 @@ function main(): number {
   try {
     const repo = join(scratch, 'task')
     mkdirSync(repo)
-    let task: Task
-    if (mode !== undefined) task = mcpTask(mode, scratch, values.echoes ?? '3')
-    else if (values.task === 'data') task = dataTask(repo)
-    else task = tsTask(repo)
+    const task = buildTask(values.task, mode, values.echoes ?? '3', scratch, repo)
+    const permissionMode = values['permission-mode']
+    if (permissionMode !== undefined) task.flags.push('--permission-mode', permissionMode)
     const settingsFile = join(scratch, 'settings.json')
     writeFileSync(settingsFile, JSON.stringify(task.settings))
     let pluginDir = ROOT
@@ -356,12 +470,8 @@ function main(): number {
       exportHead(pluginDir)
     }
     console.log(`plugin: ${values.baseline === true ? 'baseline (HEAD)' : 'working tree'}`)
-    if (values.task === 'data') {
-      return measureData(runs, () => classifyDataRun(runOnce(pluginDir, repo, settingsFile, task))) === 0 ? 0 : 1
-    }
-    const classify = mode === undefined ? classifyRun : classifyMcpRun
-    const failed = measure(runs, () => classify(runOnce(pluginDir, repo, settingsFile, task)), mode !== undefined)
-    return failed === 0 ? 0 : 1
+    const spawn = (): SpawnOutcome => runOnce(pluginDir, repo, settingsFile, task)
+    return measureTask(values.task, mode, runs, spawn, repo) === 0 ? 0 : 1
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

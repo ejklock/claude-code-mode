@@ -27,7 +27,26 @@ const [major, minor] = process.versions.node.split(".").map(Number);
 process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1);
 ' || fail "Node.js $(node -v) is too old. Install Node.js 22.19 or newer."
 
-claude plugin install codemode --marketplace "$MARKETPLACE" --scope "$SCOPE"
+# Empty output counts as "none registered": a claude with no marketplaces may print nothing.
+REGISTERED="$(claude plugin marketplace list --json | node -e '
+const raw = require("fs").readFileSync(0, "utf8");
+if (raw.trim() === "") process.exit(0);
+let list;
+try {
+  list = JSON.parse(raw);
+} catch {
+  process.exit(3);
+}
+const hit = Array.isArray(list) ? list.find((m) => m?.name === "codemode") : undefined;
+if (hit) process.stdout.write(String(hit.source || "unknown") + (hit.repo || hit.url || hit.path ? " " + (hit.repo || hit.url || hit.path) : "") + (hit.ref ? "@" + hit.ref : ""));
+')" || fail "could not read 'claude plugin marketplace list --json' output; cannot tell whether the codemode marketplace is registered."
+
+if [ -n "$REGISTERED" ]; then
+  printf 'install.sh: reusing the registered codemode marketplace (%s); MARKETPLACE is ignored.\n' "$REGISTERED"
+  claude plugin install "$PLUGIN_ID" --scope "$SCOPE"
+else
+  claude plugin install codemode --marketplace "$MARKETPLACE" --scope "$SCOPE"
+fi
 
 INSTALL_PATH="$(claude plugin list --json | node -e '
 const fs = require("fs");

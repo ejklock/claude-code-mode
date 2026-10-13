@@ -84,4 +84,33 @@ else
   report "non-JSON plugin list fails with a plain line" bad
 fi
 
+SRC="$WORK/other-source"
+mkdir -p "$SRC"
+(cd "$ROOT" && git archive HEAD) | tar -x -C "$SRC"
+fresh_config f
+claude plugin marketplace add "$SRC" >"$WORK/f-add.out" 2>&1
+if "$SH" "$ROOT/install.sh" >"$WORK/f.out" 2>&1 &&
+  grep -q 'reusing the registered codemode marketplace' "$WORK/f.out" &&
+  p="$(install_path)" && [ -n "$p" ] && [ -d "$p/node_modules/@earendil-works/pi-codemode" ] &&
+  "$SH" "$ROOT/install.sh" >"$WORK/f2.out" 2>&1; then
+  report "reuses a codemode marketplace registered from another source" ok
+else
+  cat "$WORK/f.out"
+  report "reuses a codemode marketplace registered from another source" bad
+fi
+
+STUB2="$WORK/stub2"
+mkdir -p "$STUB2"
+printf "#!/bin/sh\n[ \"\$3\" = list ] && echo 'not json'\nexit 0\n" >"$STUB2/claude"
+chmod +x "$STUB2/claude"
+
+if ! PATH="$STUB2:$PATH" "$SH" "$ROOT/install.sh" >"$WORK/g.out" 2>&1 &&
+  grep -q "could not read 'claude plugin marketplace list --json' output" "$WORK/g.out" &&
+  ! grep -q SyntaxError "$WORK/g.out" && ! grep -q '    at ' "$WORK/g.out"; then
+  report "non-JSON marketplace list fails with a plain line" ok
+else
+  cat "$WORK/g.out"
+  report "non-JSON marketplace list fails with a plain line" bad
+fi
+
 exit "$FAILED"

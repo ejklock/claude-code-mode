@@ -644,7 +644,7 @@ const composeFor = ($: Engine, tools: string[]) =>
   })
 
 const NOTE_TEXT =
-  'To process data, batch tool calls or filter large output with a script, use the codemode tool (JavaScript calling `tools.<name>(args)`) instead of inline python or node in Bash. Keep Bash for running commands.'
+  'To read or edit several files, process data, batch tool calls or filter large output with a script, use the codemode tool (JavaScript calling `tools.<name>(args)`) instead of cat, sed, or inline python or node in Bash. Keep Bash for running commands.'
 
 describe('the codemode description', () => {
   test('Proves C1: the tool is declared up front with the intro, the globals and one section per tool', async ($, on) => {
@@ -803,7 +803,7 @@ describe('the codemode guideline', () => {
     expect(sections).toHaveLength(3)
     expect(sections[2]).toEqual({ id: GUIDELINE_ID, text: GUIDELINE, scope: 'session' })
     expect(GUIDELINE).toBe(
-      'Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.',
+      'Use codemode to read, search or edit several files in one pass, batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.',
     )
   })
 

@@ -8,7 +8,6 @@
 * [0004 — The model picks codemode on its own, because the tool is declared up front, described like Pi's, and named in one system prompt line](0004-the-model-picks-codemode-on-its-own-because-the-tool-is-declared-up-front-described-like-pi-s-and-named-in-one-system-prompt-line.md) - open
 * [0012 — A codemode result over a size budget returns its head and tail to the model and keeps the whole output in a file](0012-a-codemode-result-over-a-size-budget-returns-its-head-and-tail-to-the-model-and-keeps-the-whole-output-in-a-file.md) - open
 * [0016 — The codemode tool declares the four MCP tool hints once the mods API takes them, and a check tells the day it does](0016-the-codemode-tool-declares-the-four-mcp-tool-hints-once-the-mods-api-takes-them-and-a-check-tells-the-day-it-does.md) - open
-* [0020 — A codemode script calls WebFetch and WebSearch through the bridge](0020-a-codemode-script-calls-webfetch-and-websearch-through-the-bridge.md) - open
 * [0024 — An ADR decides how codemode could poll MCP events, before any code, comparing a Bash poller with a mod-side client](0024-an-adr-decides-how-codemode-could-poll-mcp-events-before-any-code-comparing-a-bash-poller-with-a-mod-side-client.md) - open
 * [0025 — Research whether codemode scripts should also run Python, measured from the transcripts before any runtime](0025-research-whether-codemode-scripts-should-also-run-python-measured-from-the-transcripts-before-any-runtime.md) - open
 * [0027 — A check tells the day Claude Code declares the MCP tasks extension](0027-a-check-tells-the-day-claude-code-declares-the-mcp-tasks-extension.md) - open
@@ -30,6 +29,7 @@
 * [0017 — pi-codemode moves from 1.0.4 to 1.1.0, whose only change is a console flag on output items](0017-pi-codemode-moves-from-1-0-4-to-1-1-0-whose-only-change-is-a-console-flag-on-output-items.md) - closed
 * [0018 — install.sh reuses a codemode marketplace that is already registered from another source](0018-install-sh-reuses-a-codemode-marketplace-that-is-already-registered-from-another-source.md) - closed
 * [0019 — The codemode guideline and the Bash note name multi-file reads and edits, measured before and after with an edit benchmark task](0019-the-codemode-guideline-and-the-bash-note-name-multi-file-reads-and-edits-measured-before-and-after-with-an-edit-benchmark-task.md) - closed
+* [0020 — A codemode script calls WebFetch and WebSearch through the bridge](0020-a-codemode-script-calls-webfetch-and-websearch-through-the-bridge.md) - closed
 * [0021 — Measure what a codemode script receives from the Skill tool, and expose it only if a script gains from it](0021-measure-what-a-codemode-script-receives-from-the-skill-tool-and-expose-it-only-if-a-script-gains-from-it.md) - closed
 * [0022 — Measure what a codemode script receives when an MCP tool answers with a task](0022-measure-what-a-codemode-script-receives-when-an-mcp-tool-answers-with-a-task.md) - closed
 * [0023 — pi-codemode moves from 1.1.0 to 1.7.0, whose runtime was rewritten, proved by a headless run and a timeout case](0023-pi-codemode-moves-from-1-1-0-to-1-7-0-whose-runtime-was-rewritten-proved-by-a-headless-run-and-a-timeout-case.md) - closed

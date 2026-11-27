@@ -2,7 +2,7 @@
 type: Issue
 title: A codemode script calls WebFetch and WebSearch through the bridge
 description: WebFetch and WebSearch join the exposed tools, so a script reads and searches the web through the session tools and returns only what it prints.
-status: open
+status: closed
 timestamp: 2026-11-27T17:32:35Z
 ---
 
@@ -33,3 +33,9 @@ Out:
 - C3: a script whose web call outlives the 120 s script deadline (`hooks/register.ts`) fails with a ledger that marks the call `unknown`, proved by a test.
 - C4: a script calls `tools.WebFetch` in a session where the tool is absent or deferred, and the error names the cause; proved by a test.
 - C5: `se-gates check` passes.
+
+### Outcome
+
+(Bash completed with no output)
+
+Shipped in v0.8.0 (pull request #18, merge commit 1fd42d8). C1, C3, C4 and C5 are proved by `claude plugin test .` (234 pass on 2.1.291 and 2.1.332), `npm test` and the quality gate. C2, a script in a live session fetching one URL, was not run before the merge; it is the open item of the pull request's test plan.

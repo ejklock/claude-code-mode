@@ -12,7 +12,7 @@
 
 ## What it is and where it shines
 
-**What it is:** one tool, `codemode`. The model sends a short JavaScript script. The script runs in a sandbox and calls the session's tools as `tools.Read(...)`, `tools.Bash(...)`, `tools.Write(...)`, `tools.Edit(...)`, the MCP resource tools (`tools.ListMcpResourcesTool(...)`, `tools.ReadMcpResourceTool(...)`, `tools.ReadMcpResourceDirTool(...)`) and `tools.mcp__server__tool(...)`. Only what the script prints returns to the model. Every nested call still meets your permission rules, prompts and hooks.
+**What it is:** one tool, `codemode`. The model sends a short JavaScript script. The script runs in a sandbox and calls the session's tools as `tools.Read(...)`, `tools.Bash(...)`, `tools.Write(...)`, `tools.Edit(...)`, the MCP resource tools (`tools.ListMcpResourcesTool(...)`, `tools.ReadMcpResourceTool(...)`, `tools.ReadMcpResourceDirTool(...)`), the web tools (`tools.WebFetch(...)`, `tools.WebSearch(...)`) and `tools.mcp__server__tool(...)`. Only what the script prints returns to the model. Every nested call still meets your permission rules, prompts and hooks.
 
 **What it is for:** work that takes many tool calls, where each call needs a model turn and each result fills the context.
 
@@ -148,6 +148,8 @@ In a script:
 | `await tools.ListMcpResourcesTool({ server? })` | Lists the resources MCP servers offer; resolves to the list. |
 | `await tools.ReadMcpResourceTool({ server, uri })` | Reads an MCP resource; resolves to its text. |
 | `await tools.ReadMcpResourceDirTool({ server, uri })` | Lists the resources under an MCP resource directory; resolves to the list. |
+| `await tools.WebFetch({ url, prompt, offset? })` | Fetches a web page and answers the prompt about it; resolves to the answer. |
+| `await tools.WebSearch({ query, allowed_domains?, blocked_domains? })` | Searches the web; the domain lists are arrays of strings; resolves to the results. |
 | `await tools.mcp__server__tool(args)` / `await tools["mcp__server__tool"](args)` | Calls a connected MCP tool by its full name; resolves to its text. A tool that is not connected is absent, and `ALL_TOOLS` lists those that are. |
 | `text(value)` / `console.log(value)` | Adds to the output that returns to the model. |
 

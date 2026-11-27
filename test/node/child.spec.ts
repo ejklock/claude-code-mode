@@ -236,13 +236,13 @@ describe("the codemode child declares the run request's MCP tools", () => {
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: ALL_TOOLS lists the MCP tools beside the seven built-ins', async () => {
+  it('ALL_TOOLS lists the MCP tools beside the nine built-ins', async () => {
     const outcome = await runWithMcpTools(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, FAKE_TOOLS)
     assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS, 'mcp__fake__echo', 'mcp__fake_srv__ping'])
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: a run request with no MCP tools declares the seven built-ins only', async () => {
+  it('a run request with no MCP tools declares the nine built-ins only', async () => {
     const outcome = await runChild(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, answerByTool)
     assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS])
     assertCleanExit(outcome)

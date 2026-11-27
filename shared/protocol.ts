@@ -12,13 +12,15 @@ export const EXPOSED_TOOLS = [
   'ListMcpResourcesTool',
   'ReadMcpResourceTool',
   'ReadMcpResourceDirTool',
+  'WebFetch',
+  'WebSearch',
 ] as const
 
 export type ExposedTool = (typeof EXPOSED_TOOLS)[number]
 
 /** One argument of an exposed tool: the child declares it, the description names it. */
 export type ToolArg = {
-  type: 'string' | 'number' | 'boolean'
+  type: 'string' | 'number' | 'boolean' | 'string[]'
   isRequired: boolean
   /** How the model-facing description words the argument. */
   note?: string
@@ -101,6 +103,30 @@ export const TOOL_SPECS: Record<ExposedTool, ToolSpec> = {
       uri: { type: 'string', isRequired: true, sandboxNote: 'The directory uri.' },
     },
   },
+  WebFetch: {
+    sandboxDescription: 'Fetches a web page and answers a prompt about it; resolves to the answer.',
+    summary: 'Fetches a web page and answers a prompt about it.',
+    resolves: 'the answer text',
+    args: {
+      url: { type: 'string', isRequired: true, sandboxNote: 'The page url.' },
+      prompt: { type: 'string', isRequired: true, sandboxNote: 'What to extract from the page.' },
+      offset: { type: 'number', isRequired: false, note: 'where to resume a long page', sandboxNote: 'Where to resume a long page.' },
+    },
+  },
+  WebSearch: {
+    sandboxDescription: 'Searches the web; resolves to the results.',
+    summary: 'Searches the web.',
+    resolves: 'the search results',
+    args: {
+      query: { type: 'string', isRequired: true, sandboxNote: 'The search query.' },
+      allowed_domains: { type: 'string[]', isRequired: false, note: 'only these domains', sandboxNote: 'Only results from these domains.' },
+      blocked_domains: { type: 'string[]', isRequired: false, note: 'never these domains', sandboxNote: 'No results from these domains.' },
+    },
+  },
+}
+
+function typeSchemaOf(type: ToolArg['type']): Record<string, unknown> {
+  return type === 'string[]' ? { type: 'array', items: { type: 'string' } } : { type }
 }
 
 /** The JSON schema of a tool's input, as the child declares it to the sandbox. */
@@ -109,7 +135,7 @@ export function inputSchemaOf(spec: ToolSpec): Record<string, unknown> {
   return {
     type: 'object',
     properties: Object.fromEntries(
-      entries.map(([name, arg]) => [name, { type: arg.type, ...(arg.sandboxNote === undefined ? {} : { description: arg.sandboxNote }) }]),
+      entries.map(([name, arg]) => [name, { ...typeSchemaOf(arg.type), ...(arg.sandboxNote === undefined ? {} : { description: arg.sandboxNote }) }]),
     ),
     required: entries.filter(([, arg]) => arg.isRequired).map(([name]) => name),
   }

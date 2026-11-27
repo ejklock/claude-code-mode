@@ -32,7 +32,10 @@ export type BridgeHost = {
   sleep: (ms: number) => Promise<void>
 }
 
-/** How long a failed run waits for the child's closing line, so a script error is not lost to a late-answer failure. */
+/**
+ * How long a failed run waits for the child's closing line, so a script error is not lost to a late-answer failure,
+ * and for nested calls still running once the child has ended; the ledger then lists those as unknown.
+ */
 export const CLOSING_GRACE_MS = 2000
 
 /** Runs kept in `$.state`: the transcript rarely draws more than the latest few. */
@@ -298,9 +301,22 @@ export class CodemodeBridge {
     await tracker.begin(code)
     const state = newRunState(tracker, new Set(mcpTools.map(tool => tool.name)))
     const exit = await this.readChild(JSON.stringify(request), state)
-    await Promise.allSettled(state.answers)
+    await this.awaitAnswers(state)
     await tracker.finish()
     return this.outcome(state, exit)
+  }
+
+  /**
+   * A script that ended well has all its calls answered. One that failed (a deadline included) may leave a call
+   * still running in the session; it is waited for only the grace, then the ledger lists it as unknown.
+   */
+  private async awaitAnswers(state: RunState): Promise<void> {
+    const settled = Promise.allSettled(state.answers)
+    if (state.closing?.ok !== false) {
+      await settled
+      return
+    }
+    await Promise.race([settled, this.host.sleep(CLOSING_GRACE_MS).catch(() => undefined)])
   }
 
   /** A list that cannot be read leaves the script with the built-ins; the model is told nothing new. */
@@ -402,7 +418,7 @@ export class CodemodeBridge {
       const answer = { id: call.id, ok: true as const, text: result.text ?? '' }
       return result.isReadOnly === true ? { answer, state: 'done', readOnly: true } : { answer, state: 'done' }
     } catch (error) {
-      return thrownOutcome(call.id, error)
+      return thrownOutcome(call.id, call.tool, error)
     }
   }
 
@@ -433,7 +449,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function thrownOutcome(id: number, error: unknown): Settled {
+export function thrownOutcome(id: number, tool: string, error: unknown): Settled {
   const reason = errorMessage(error)
-  return { answer: { id, ok: false, error: reason }, state: 'failed', reason, unknown: true }
+  const named = reason === '' ? `${tool} failed` : `${tool}: ${reason}`
+  return { answer: { id, ok: false, error: named }, state: 'failed', reason, unknown: true }
 }

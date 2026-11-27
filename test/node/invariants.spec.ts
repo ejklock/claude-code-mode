@@ -68,6 +68,12 @@ const CODE_SNAPSHOT = [
   '',
   '### `ReadMcpResourceDirTool`',
   'Lists the resources under an MCP resource directory. `tools.ReadMcpResourceDirTool(args)` takes `server` (server name), `uri`, and resolves to the resources under it.',
+  '',
+  '### `WebFetch`',
+  'Fetches a web page and answers a prompt about it. `tools.WebFetch(args)` takes `url`, `prompt`, optional `offset` (where to resume a long page), and resolves to the answer text.',
+  '',
+  '### `WebSearch`',
+  'Searches the web. `tools.WebSearch(args)` takes `query`, optional `allowed_domains` (only these domains) and `blocked_domains` (never these domains), and resolves to the search results.',
 ].join('\n')
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -445,8 +451,35 @@ describe('the sandbox declares the MCP resource tools as the build types them', 
   }
 })
 
+describe('the sandbox declares the web tools as the build types them', () => {
+  const shape = (name: 'WebFetch' | 'WebSearch') => {
+    const { inputSchema, outputSchema } = declarationOf(name)
+    const properties = inputSchema.properties as Record<string, Record<string, unknown>>
+    return { properties, required: inputSchema.required, outputSchema }
+  }
+  const listOfStrings = (description: string) => ({ type: 'array', items: { type: 'string' }, description })
+
+  it('WebFetch requires a url and a prompt, both strings, with an optional numeric offset', () => {
+    const { properties, required, outputSchema } = shape('WebFetch')
+    assert.deepEqual(Object.keys(properties), ['url', 'prompt', 'offset'])
+    assert.deepEqual(Object.values(properties).map(property => property.type), ['string', 'string', 'number'])
+    assert.deepEqual(required, ['url', 'prompt'])
+    assert.deepEqual(outputSchema, { type: 'string' })
+  })
+
+  it('WebSearch requires a query and types both domain lists as arrays of strings', () => {
+    const { properties, required } = shape('WebSearch')
+    assert.deepEqual(Object.keys(properties), ['query', 'allowed_domains', 'blocked_domains'])
+    assert.equal(properties.query?.type, 'string')
+    for (const name of ['allowed_domains', 'blocked_domains']) {
+      assert.deepEqual(properties[name], listOfStrings(String(properties[name]?.description)))
+    }
+    assert.deepEqual(required, ['query'])
+  })
+})
+
 describe('the description holds to the cap', () => {
-  it('Proves C2: the sections of all seven built-ins fit the sections budget', () => {
+  it('the sections of all nine built-ins fit the sections budget', () => {
     const text = codeDescription()
     assert.equal([...text.matchAll(/^### `(\w+)`$/gm)].length, EXPOSED_TOOLS.length)
     assert.ok(Math.ceil(text.length / 4) <= SECTIONS_BUDGET, `sections are ${text.length} characters`)
@@ -536,9 +569,9 @@ describe('the sections fit a budget in estimated tokens', () => {
     assert.doesNotMatch(codeDescription([], []), /Nested tools:/)
   })
 
-  it('Proves C1: the real seven built-ins are all shown and none is marked unlisted', () => {
+  it('the real nine built-ins are all shown and none is marked unlisted', () => {
     const text = codeDescription()
-    assert.deepEqual([...EXPOSED_TOOLS], ['Read', 'Bash', 'Write', 'Edit', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool'])
+    assert.deepEqual([...EXPOSED_TOOLS], ['Read', 'Bash', 'Write', 'Edit', 'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'WebFetch', 'WebSearch'])
     assert.deepEqual([...text.matchAll(/^### `(\w+)`$/gm)].map(match => match[1]), [...EXPOSED_TOOLS])
     assert.doesNotMatch(text, /not listed/)
   })
@@ -592,7 +625,7 @@ describe('the model-facing description keeps its text', () => {
     assert.equal(describeCodemode(), DESCRIPTION_SNAPSHOT)
   })
 
-  it('Proves C2: the code parameter description with the seven built-ins is byte-identical to the snapshot', () => {
+  it('the code parameter description with the nine built-ins is byte-identical to the snapshot', () => {
     assert.equal(codeDescription(), CODE_SNAPSHOT)
   })
 })

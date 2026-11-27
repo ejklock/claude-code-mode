@@ -92,10 +92,15 @@ function runClaude({ settingsFile, prompt, cwd, mode, mcpConfig, env }: RunOptio
   return { events, stdout: run.stdout, stderr: run.stderr, status: run.status }
 }
 
-/** What the model's one codemode call returned, or `undefined` when it never called it. */
-function codemodeResult(events: Event[], tool: string = TOOL): { called: boolean; text: string; code: string } {
+/**
+ * What the model's codemode call returned: the first call, or with `calling` the first whose
+ * code names that identifier, falling back to the first call when none does.
+ */
+function codemodeResult(events: Event[], tool: string = TOOL, calling?: string): { called: boolean; text: string; code: string } {
   const all = events.flatMap(blocks)
-  const use = all.find(block => block.type === 'tool_use' && block.name === tool)
+  const calls = all.filter(block => block.type === 'tool_use' && block.name === tool)
+  const names = (block: Block): boolean => calling !== undefined && String((block.input as { code?: unknown } | undefined)?.code ?? '').includes(calling)
+  const use = calls.find(names) ?? calls[0]
   const result = all.find(block => block.type === 'tool_result' && block.tool_use_id === use?.id)
   const code = (use?.input as { code?: unknown } | undefined)?.code
   return {
@@ -123,6 +128,8 @@ type Scenario = {
   options?: Record<string, string>
   /** The tool whose call and result the run is judged on, when it is not the codemode tool. */
   resultOf?: string
+  /** The identifier a script calls; the codemode call judged is the first whose code names it. */
+  callsIdentifier?: string
   /** `calls` holds the name of every tool_use block of the run, in order; `results` the text of every tool_result block. */
   checks: (text: string, file: string, code: string, calls: string[], results: string[], uses: Block[]) => Check[]
 }
@@ -278,6 +285,7 @@ const SCENARIOS: Scenario[] = [
     rules: { permissions: { allow: [TOOL, MCP_TOOL] } },
     mcp: 'fake',
     options: { mcpCodemode: 'fake' },
+    callsIdentifier: MCP_TOOL,
     ask: [
       'Get the fake echo of the text e2e-ping-31 and reply with the echo\'s answer verbatim.',
     ].join('\n'),
@@ -292,14 +300,15 @@ const SCENARIOS: Scenario[] = [
     rules: { permissions: { allow: [TOOL, SEAL_TOOL] } },
     mcp: 'sealed',
     options: { mcpCodemode: 'fake-store' },
+    callsIdentifier: SEAL_IDENTIFIER,
     ask: 'Seal the fake store\'s records and reply with the store\'s answer verbatim.',
     script: () => '',
-    checks: (_text, _file, code, calls, _results, uses) => {
+    checks: (_text, _file, code, _calls, _results, uses) => {
       const searchedAt = uses.findIndex(use => use.name === 'ToolSearch' && JSON.stringify(use.input).includes(`select:${SEAL_TOOL}`))
-      const codemodeAt = calls.indexOf(TOOL)
+      const callAt = uses.findIndex(use => use.name === TOOL && JSON.stringify(use.input).includes(SEAL_IDENTIFIER))
       const log = read(SEAL_LOG)?.split('\n').filter(line => line !== '') ?? []
       return [
-        ['mcp arguments loaded: ToolSearch select: with the full name came before the first codemode call', searchedAt !== -1 && searchedAt < codemodeAt],
+        ['mcp arguments loaded: ToolSearch with the full name came before the first codemode call of the tool', searchedAt !== -1 && callAt !== -1 && searchedAt < callAt],
         ['mcp arguments loaded: the script called the tool by its identifier', code.includes(`tools.${SEAL_IDENTIFIER}`)],
         ['mcp arguments loaded: the first call of the tool carried its argument', log[0] === 'with'],
       ]
@@ -394,7 +403,7 @@ function runScenario(scenario: Scenario, scratch: string, index: number): Outcom
   const mcpConfig = scenario.mcp === undefined ? undefined : join(folder, 'mcp.json')
   if (mcpConfig !== undefined && scenario.mcp !== undefined) writeFileSync(mcpConfig, JSON.stringify(MCP_CONFIGS[scenario.mcp]))
   const run = runClaude({ settingsFile, prompt: scenario.ask ?? promptFor(scenario.script(file)), cwd: folder, mode: scenario.mode, mcpConfig, env: scenario.env })
-  const { called, text, code } = codemodeResult(run.events, scenario.resultOf)
+  const { called, text, code } = codemodeResult(run.events, scenario.resultOf, scenario.callsIdentifier)
   const uses = run.events.flatMap(blocks).filter(block => block.type === 'tool_use')
   const calls = uses.map(block => block.name ?? '')
   const results = run.events

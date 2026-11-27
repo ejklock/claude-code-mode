@@ -23,6 +23,7 @@ Out:
 ### Decision
 
 - Opened on the owner's request, 2026-11-27, after weighing MCP elicitation.
+- **The dialog shows outside the auto mode only; in auto mode an `ask` stays refused** until Claude Code lets `$.tool.call` reach the mode's decider again, which the upstream report asks for. The mods API exposes no way to run the auto-mode classifier: `$.tool.check` "asks no PreToolUse hook or classifier", and `$.model.classify` is a generic classifier. Not taken: the dialog in auto mode too (it would interrupt the mode meant to decide alone); a classifier of the mod's own (the mod would decide a permission, against Amendment 1). Open: how the bridge reads the session's permission mode; the committed types show `permissionMode` only on agent records.
 
 ### Acceptance
 

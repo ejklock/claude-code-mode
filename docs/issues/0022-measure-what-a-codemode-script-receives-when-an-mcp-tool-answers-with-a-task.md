@@ -2,7 +2,7 @@
 type: Issue
 title: Measure what a codemode script receives when an MCP tool answers with a task
 description: A fixture tool answers tools/call with an MCP task, and the issue records what $.tool.call returns to the mod before any waiting is designed.
-status: open
+status: closed
 timestamp: 2026-11-27T17:32:38Z
 ---
 
@@ -30,3 +30,13 @@ Advisor review, 2026-11-27, from the 2.1.332 strings: the MCP task result says t
 
 - C1: the Outcome carries the real output of one live call of the fixture tool from a script, and answers both questions of the scope: a mod-visible completion surface, and auto-backgrounding of a slow nested call.
 - C2: a spec under `test/node` drives the mod against the fixture, so the proof covers the mod and not the fixture alone.
+
+### Outcome
+
+Measured on 2026-11-27 with Claude Code 2.1.332, headless, with a throwaway stdio fixture (`long_job` answering with a task, `slow_job` sleeping before a normal result) and a request log. Logs kept under `$TMPDIR/probe/logs` for the session only.
+
+- What Claude Code sends: `server/discover` first (protocol 2026-07-28), and on every request `_meta` with `clientCapabilities` `roots` and `elicitation`, never an `extensions` entry and never `io.modelcontextprotocol/tasks`. With `server/discover` refused it falls back to `initialize` (2025-11-25), again without tasks.
+- A compliant server therefore answers synchronously, and the script gets the normal result.
+- A server that answers with a task anyway: the script gets the error `Unsupported result type 'task' for tools/call` (`isError`). No `tasks/get` is ever sent and no task notification reaches the model. A direct model call gets the same error, so this is session-wide, not a property of `$.tool.call`.
+- A 90 s call is not moved to the background: the script waits and receives the result (90 153 ms). A 150 s call outlives the 120 s script deadline: the codemode result lists it `unknown: no answer` with the may-have-run note; the session sends no cancellation and the late answer reaches nobody.
+- Producers of a deferred result found: none. The inference in Scope (a task marker reaching the script) does not hold for 2.1.332.

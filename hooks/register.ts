@@ -89,6 +89,7 @@ export const register: Register = (on, options) => {
       {
         pluginRoot: $.plugin.root,
         spawn: request => $.process.spawn(request),
+        checkTool: input => $.tool.check(input),
         callTool: input => $.tool.call(input),
         listTools: () => visibleTools(() => $.tool.list()),
         post: (url, init) => $.http.fetch(url, init),

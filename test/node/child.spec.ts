@@ -332,6 +332,7 @@ const makeHost = (overrides: Partial<BridgeHost>): BridgeHost => ({
   spawn: () => {
     throw new Error('this test gave the host no spawn')
   },
+  checkTool: async () => ({ decision: 'allow' }),
   callTool: async () => ({ result: 'unused', text: 'FILE-BODY' }) as Awaited<ReturnType<BridgeHost['callTool']>>,
   listTools: async () => [],
   post: async () => {

@@ -7,6 +7,8 @@ import type {
   ProcessSpawnResult,
   ToolCallArgs,
   ToolCallResult,
+  ToolCheckArgs,
+  ToolCheckResult,
   ToolInfo,
 } from 'claude-code'
 
@@ -21,6 +23,8 @@ import type { CodemodeCall, CodemodeCallState, CodemodeRun } from '../types/inde
 export type BridgeHost = {
   pluginRoot: string
   spawn: (request: ProcessSpawnRequest) => HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+  /** The engine's permission verdict for a call, asked without running it. */
+  checkTool: (input: ToolCheckArgs) => Promise<ToolCheckResult>
   callTool: (input: ToolCallArgs) => Promise<ToolCallResult>
   /** The tools the model has now, built-in and MCP alike. */
   listTools: () => Promise<ToolInfo[]>
@@ -410,6 +414,15 @@ export class CodemodeBridge {
     const input = Object.fromEntries(
       Object.entries(call.input).filter(([key]) => !RESERVED_KEYS.includes(key)),
     )
+    // The engine's own decision chain says whether the call may run; a plugin's call does not apply the session's rules itself.
+    try {
+      const verdict = await this.host.checkTool({ tool: call.tool, input })
+      if (verdict.decision !== 'allow') {
+        return refused(`${call.tool}: ${verdict.reason ?? `the session's permission rules answer ${verdict.decision}`}`)
+      }
+    } catch (error) {
+      return refused(`${call.tool}: the permission check failed: ${errorMessage(error)}`)
+    }
     try {
       // The tool's own schema validates the arguments; the script chose them.
       const result = await this.host.callTool({ ...input, tool: call.tool } as ToolCallArgs)

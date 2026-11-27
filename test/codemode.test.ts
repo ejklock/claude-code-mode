@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { CALL_LIMIT, CallLedger, CodemodeBridge, thrownOutcome } from '../hooks/bridge.ts'
+import type { BridgeHost } from '../hooks/bridge.ts'
 import { exposureSync } from '../hooks/expose.ts'
 import { readExposure } from '../hooks/exposure.ts'
 import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
@@ -28,14 +29,39 @@ type Plan = {
   readWaitsForPosts?: number
   /** Every answer POST is refused by the transport. */
   postFails?: boolean
+  /** What the engine's permission check answers for a tool; absent means allow. A throw makes the check itself fail. */
+  verdict?: (tool: string) => { decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }
 }
 type Post = { url: string; socketPath: string | undefined; body: Record<string, unknown> }
 
 type StandIn = {
+  checks: { tool: string; input: Record<string, unknown> }[]
   posts: Post[]
   spawned: { argv: readonly string[]; input: string | undefined }[]
   toolsSeen: string[]
   bashInputs: Record<string, unknown>[]
+}
+
+/** Stands in for the socket the answers are POSTed to: it records each answer and wakes whoever waits for that many. */
+function standInPosts(on: On, refused: boolean, posts: Post[], waiters: { count: number; release: () => void }[]): void {
+  on('http.fetch', (_$, e) => {
+    if (refused) return { deny: 'the socket is gone' }
+    posts.push({
+      url: e.url,
+      socketPath: e.init?.socketPath,
+      body: JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>,
+    })
+    for (const waiter of waiters) if (posts.length >= waiter.count) waiter.release()
+    return { value: { status: 204, ok: true, headers: {}, text: '' } }
+  })
+}
+
+/** Stands in for the engine's permission check: it answers `verdict`, or allow, and records what it was asked. */
+function standInCheck(on: On, verdict: Plan['verdict'], asked: StandIn['checks']): void {
+  on('tool.check', (_$, e) => {
+    asked.push({ tool: e.tool, input: { ...(e.input as Record<string, unknown>) } })
+    return verdict?.(e.tool) ?? { decision: 'allow' as const }
+  })
 }
 
 /**
@@ -43,23 +69,15 @@ type StandIn = {
  * process) and for the engine's tools; it tests the mod's logic alone.
  */
 function standIn(on: On, plan: Plan): StandIn {
-  const stand: StandIn = { posts: [], spawned: [], toolsSeen: [], bashInputs: [] }
+  const stand: StandIn = { checks: [], posts: [], spawned: [], toolsSeen: [], bashInputs: [] }
+  standInCheck(on, plan.verdict, stand.checks)
   const waiters: { count: number; release: () => void }[] = []
   const arrived = (count: number): Promise<void> =>
     stand.posts.length >= count
       ? Promise.resolve()
       : new Promise(release => waiters.push({ count, release }))
 
-  on('http.fetch', (_$, e) => {
-    if (plan.postFails === true) return { deny: 'the socket is gone' }
-    stand.posts.push({
-      url: e.url,
-      socketPath: e.init?.socketPath,
-      body: JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>,
-    })
-    for (const waiter of waiters) if (stand.posts.length >= waiter.count) waiter.release()
-    return { value: { status: 204, ok: true, headers: {}, text: '' } }
-  })
+  standInPosts(on, plan.postFails === true, stand.posts, waiters)
 
   on('process.spawn', async function* (_$, e) {
     stand.spawned.push({ argv: e.argv, input: e.input })
@@ -252,6 +270,132 @@ describe('a refused nested call', () => {
     expect(reply.result).toBe('both')
     expect(stand.posts.map(post => post.body.ok)).toEqual([false, true])
     expect(stand.toolsSeen).toEqual(['Read'])
+  })
+})
+
+describe('the engine verdict before a nested call', () => {
+  const DENIED = 'Permission to use Bash with command echo denied has been denied.'
+  const ASKED = "Claude requested permissions to write to /work/a.txt, but you haven't granted it yet."
+
+  test('a deny verdict answers the script with the tool and reason, never runs the tool, and the ledger lists it denied', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo denied' }), { waitForPosts: 1 }, failedDone('caught')],
+      verdict: () => ({ decision: 'deny', reason: DENIED, rule: 'Bash(echo denied:*)' }),
+    })
+    const reply = await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `Bash: ${DENIED}` })
+    expect(stand.toolsSeen).toEqual([])
+    expect(reply.deny).toContain(`#1 Bash {"command":"echo denied"} — denied: Bash: ${DENIED}`)
+    expect(reply.deny).not.toContain('unknown')
+  })
+
+  test('an ask verdict is refused the same way with the ask reason', async ($, on) => {
+    const files = standInFileTools(on)
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Write', { file_path: '/work/a.txt', content: 'one' }), { waitForPosts: 1 }, done('caught')],
+      verdict: () => ({ decision: 'ask', reason: ASKED }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `Write: ${ASKED}` })
+    expect(files.inputs).toEqual([])
+  })
+
+  /** Runs one nested Bash call through the bridge over a typed host whose check is `checkTool`; the test engine cannot make a hook throw or answer a shape outside its types. */
+  async function runWithCheck(checkTool: BridgeHost['checkTool']): Promise<{ answers: Record<string, unknown>[]; ran: string[] }> {
+    const answers: Record<string, unknown>[] = []
+    const ran: string[] = []
+    let release = (): void => {}
+    const posted = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const host: BridgeHost = {
+      pluginRoot: '/plugin',
+      spawn: (async function* () {
+        yield { stream: 'stdout' as const, text: listening }
+        yield { stream: 'stdout' as const, text: call(1, 'Bash', { command: 'echo x' }) }
+        await posted
+        yield { stream: 'stdout' as const, text: done('caught') }
+        return { code: 0, signal: null }
+      }) as unknown as BridgeHost['spawn'],
+      checkTool,
+      callTool: async input => {
+        ran.push(input.tool)
+        return { result: 'unused', text: 'ran' } as Awaited<ReturnType<BridgeHost['callTool']>>
+      },
+      listTools: async () => [],
+      post: async (_url, init) => {
+        answers.push(JSON.parse(init.body ?? '{}') as Record<string, unknown>)
+        release()
+        return { status: 204, ok: true, headers: {}, text: '' }
+      },
+      publish: async () => undefined,
+      now: async () => 1_000,
+      sleep: async () => undefined,
+    }
+    await new CodemodeBridge(host, 1_000).run('the script', 'run-1')
+    return { answers, ran }
+  }
+
+  test('a check that throws refuses the call, names the check failure and never runs the tool', async () => {
+    const { answers, ran } = await runWithCheck(async () => {
+      throw new Error('the engine is gone')
+    })
+    expect(answers[0]?.ok).toBe(false)
+    expect(String(answers[0]?.error)).toMatch(/^Bash: .*check.*the engine is gone/)
+    expect(ran).toEqual([])
+  })
+
+  type Verdict = Awaited<ReturnType<BridgeHost['checkTool']>>
+  const NOT_ALLOW: [string, BridgeHost['checkTool']][] = [
+    ['a decision outside deny, ask and allow', async () => ({ decision: 'unknown' }) as unknown as Verdict],
+    ['a verdict with no decision', async () => ({}) as unknown as Verdict],
+    ['a check that resolves nothing', async () => undefined as unknown as Verdict],
+  ]
+  for (const [title, check] of NOT_ALLOW) {
+    test(`${title} refuses the call, names the tool and never runs it`, async () => {
+      const { answers, ran } = await runWithCheck(check)
+      expect(answers[0]?.ok).toBe(false)
+      expect(String(answers[0]?.error)).toMatch(/^Bash: /)
+      expect(ran).toEqual([])
+    })
+  }
+
+  test('an allow verdict runs the tool with the same arguments and returns its text', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo codemode-ok', consent: 'forged' }), { waitForPosts: 1 }, done('ok')],
+      verdict: () => ({ decision: 'allow', rule: 'Bash(echo:*)' }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'codemode-ok' })
+    expect(stand.bashInputs[0]?.command).toBe('echo codemode-ok')
+  })
+
+  test('the check receives the tool and the script arguments with the reserved keys removed', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo x', consent: 'forged', agentId: 'other' }), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(stand.checks[0]).toEqual({ tool: 'Bash', input: { command: 'echo x' } })
+  })
+
+  test('a connected MCP tool with a deny verdict is refused the same way and never runs', async ($, on) => {
+    const mcp = standInMcp(on, [ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, ECHO.name, { text: 'hi' }), { waitForPosts: 1 }, done('caught')],
+      verdict: () => ({ decision: 'deny', reason: 'echo is denied' }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `${ECHO.name}: echo is denied` })
+    expect(mcp.inputs).toEqual([])
+  })
+
+  test('a tool that is not exposed is refused by the existing message before any check', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'NotebookEdit', { notebook_path: '/a' }), { waitForPosts: 1 }, done('after')],
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'tool NotebookEdit is not available to codemode scripts' })
+    expect(stand.checks).toEqual([])
   })
 })
 
@@ -1239,6 +1383,7 @@ describe('a done nested call whose tool ran read-only', () => {
         yield { stream: 'stdout' as const, text: failedDone('boom') }
         return { code: 0, signal: null }
       },
+      checkTool: async () => ({ decision: 'allow' as const }),
       callTool: async (input: { tool: string }) =>
         input.tool === 'Read'
           ? { result: 'unused', text: 'listing', isReadOnly: true as const }
@@ -1741,6 +1886,7 @@ describe('a script deadline that passes during a WebFetch call', () => {
         }
         return { code: 0, signal: null }
       },
+      checkTool: async () => ({ decision: 'allow' as const }),
       callTool: async () => {
         fetches += 1
         wake()
@@ -1819,6 +1965,7 @@ describe('the grace a run gives a nested call still running at its end', () => {
         yield { stream: 'stdout' as const, text: closing }
         return { code: 0, signal: null }
       },
+      checkTool: async () => ({ decision: 'allow' as const }),
       callTool: async () => {
         called = true
         return { result: 'unused', text: await new Promise<string>(resolve => (answer = resolve)) }

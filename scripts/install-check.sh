@@ -99,6 +99,60 @@ else
   report "reuses a codemode marketplace registered from another source" bad
 fi
 
+# Prints the permissions.allow list of the throwaway config's settings.json, one rule per line.
+allow_list() {
+  node -e '
+let settings = {};
+try {
+  settings = JSON.parse(require("fs").readFileSync(process.argv[1] + "/settings.json", "utf8"));
+} catch {}
+for (const rule of settings.permissions?.allow ?? []) console.log(rule);
+' "$CLAUDE_CONFIG_DIR"
+}
+
+has_all_rules() {
+  rules="$(allow_list)"
+  for rule in Read Glob Grep ListMcpResourcesTool ReadMcpResourceTool ReadMcpResourceDirTool WebSearch 'mcp__codegraph__*' 'mcp__mail__get_*'; do
+    printf '%s\n' "$rules" | grep -qxF "$rule" || return 1
+  done
+}
+
+fresh_config h
+printf '{"pluginConfigs":{"codemode":{"options":{"mcpCodemode":"codegraph, mail__get_*"}}}}\n' >"$CLAUDE_CONFIG_DIR/settings.json"
+if ALLOW_RULES=print "$SH" "$ROOT/install.sh" >"$WORK/h.out" 2>&1 &&
+  [ -z "$(allow_list)" ] && grep -q '^  Read$' "$WORK/h.out" && grep -q '^  mcp__codegraph__\*$' "$WORK/h.out"; then
+  report "ALLOW_RULES=print lists the rules and writes nothing" ok
+else
+  cat "$WORK/h.out"
+  report "ALLOW_RULES=print lists the rules and writes nothing" bad
+fi
+
+fresh_config i
+printf '{"pluginConfigs":{"codemode":{"options":{"mcpCodemode":"codegraph, mail__get_*"}}}}\n' >"$CLAUDE_CONFIG_DIR/settings.json"
+if ALLOW_RULES=yes "$SH" "$ROOT/install.sh" >"$WORK/i.out" 2>&1 && has_all_rules; then
+  report "ALLOW_RULES=yes writes the rules" ok
+else
+  cat "$WORK/i.out"
+  report "ALLOW_RULES=yes writes the rules" bad
+fi
+
+fresh_config j
+if ALLOW_RULES=no "$SH" "$ROOT/install.sh" >"$WORK/j.out" 2>&1 && [ -z "$(allow_list)" ]; then
+  report "ALLOW_RULES=no writes nothing" ok
+else
+  cat "$WORK/j.out"
+  report "ALLOW_RULES=no writes nothing" bad
+fi
+
+fresh_config k
+if "$SH" "$ROOT/install.sh" >"$WORK/k.out" 2>&1 </dev/null && [ -z "$(allow_list)" ] &&
+  grep -q 'No terminal to ask on' "$WORK/k.out"; then
+  report "ask without a terminal writes nothing" ok
+else
+  cat "$WORK/k.out"
+  report "ask without a terminal writes nothing" bad
+fi
+
 STUB2="$WORK/stub2"
 mkdir -p "$STUB2"
 printf "#!/bin/sh\n[ \"\$3\" = list ] && echo 'not json'\nexit 0\n" >"$STUB2/claude"

@@ -110,6 +110,12 @@ To choose where the plugin is installed, set `SCOPE` to `user` (the default), `p
 curl -fsSL https://raw.githubusercontent.com/ejklock/claude-code-mode/main/install.sh | SCOPE=project sh
 ```
 
+A script's nested call of a tool runs only when a permission rule allows that tool. After the install the script lists the allow rules codemode scripts need and asks `Add these to permissions.allow? [y/N]`; on `y` it merges them into `permissions.allow` of the settings file for the `SCOPE` (`$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json` for `user`, `.claude/settings.json` for `project`, `.claude/settings.local.json` for `local`, both under the current directory). The rules are `Read`, `Glob`, `Grep`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ReadMcpResourceDirTool` and `WebSearch`, plus one rule for each entry of `mcpCodemode` in that file: a server `codegraph` gives `mcp__codegraph__*`, a tool `server__tool` gives `mcp__server__tool`, and `server__prefix*` gives `mcp__server__prefix*`. Every tool of a listed server is allowed, the ones that write included. It touches nothing but `permissions.allow`, keeps the old file next to it as `<file name>.bak-<timestamp>` (`settings.local.json.bak-<timestamp>` under `local`), adds a rule only once, and refuses a file that is not valid JSON or is a symlink. A failure ends in one `allow-rules:` line and leaves the file as it was. An `mcpCodemode` entry with a glob in the server part (`claude_ai_*`) gets no rule, because an allow rule cannot glob a server name; the script names it so you add rules for those servers by hand. Set `ALLOW_RULES` to `yes` to merge without asking, `no` to skip, or `print` to only list the rules; with no terminal, `ask` skips and says how to rerun:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ejklock/claude-code-mode/main/install.sh | ALLOW_RULES=yes sh
+```
+
 If you prefer not to pipe a script, install by hand. From Claude Code:
 
 ```

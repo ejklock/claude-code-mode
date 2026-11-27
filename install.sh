@@ -1,10 +1,13 @@
 #!/bin/sh
 # Installs the codemode plugin and its runtime dependency.
 # Environment: SCOPE (user, project or local; default user),
-# MARKETPLACE (default ejklock/claude-code-mode; a local clone path also works).
+# MARKETPLACE (default ejklock/claude-code-mode; a local clone path also works),
+# ALLOW_RULES (ask, yes, no or print; default ask): whether to merge the allow rules
+# codemode scripts need into permissions.allow of the SCOPE's settings file.
 set -eu
 
 SCOPE="${SCOPE:-user}"
+ALLOW_RULES="${ALLOW_RULES:-ask}"
 MARKETPLACE="${MARKETPLACE:-ejklock/claude-code-mode}"
 PLUGIN_ID="codemode@codemode"
 
@@ -16,6 +19,11 @@ fail() {
 case "$SCOPE" in
   user | project | local) ;;
   *) fail "SCOPE must be user, project or local (got '$SCOPE')." ;;
+esac
+
+case "$ALLOW_RULES" in
+  ask | yes | no | print) ;;
+  *) fail "ALLOW_RULES must be ask, yes, no or print (got '$ALLOW_RULES')." ;;
 esac
 
 command -v claude >/dev/null 2>&1 || fail "claude not found. Install Claude Code first: https://claude.com/claude-code"
@@ -66,6 +74,9 @@ if (hit && hit.installPath) process.stdout.write(hit.installPath);
 
 (cd "$INSTALL_PATH" && npm ci --omit=dev) ||
   fail "npm ci failed in '$INSTALL_PATH'. Run 'npm ci --omit=dev' there by hand."
+
+SCOPE="$SCOPE" ALLOW_RULES="$ALLOW_RULES" node "$INSTALL_PATH/scripts/allow-rules.ts" ||
+  printf 'install.sh: the allow rules were not added; the install itself is done. Rerun with ALLOW_RULES=print to see them.\n' >&2
 
 printf '\ncodemode is installed in %s\n' "$INSTALL_PATH"
 printf 'To start: run "claude", then ask it to use codemode.\n'

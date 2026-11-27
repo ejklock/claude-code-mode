@@ -36,6 +36,9 @@ Out:
 
 ### Outcome
 
+
 (Bash completed with no output)
 
-Shipped in v0.8.0 (pull request #18, merge commit 1fd42d8). C1, C3, C4 and C5 are proved by `claude plugin test .` (234 pass on 2.1.291 and 2.1.332), `npm test` and the quality gate. C2, a script in a live session fetching one URL, was not run before the merge; it is the open item of the pull request's test plan.
+Shipped in v0.8.0 (pull request #18, merge commit 1fd42d8). C1, C3, C4 and C5 are proved by `claude plugin test .` (234 pass on 2.1.291 and 2.1.332), `npm test` and the quality gate.
+
+C2, verified on 2026-11-27 in a live interactive session with v0.8.0 installed: `ALL_TOOLS` lists WebFetch and WebSearch, and a script's `tools.WebFetch` on an MCP documentation page returned its text. In the same session the permission barrier refused a script's `tools.Write` to `/etc` with the engine's ask reason, and the file was not written; it also refused a nested `Bash` that the auto mode's classifier would have settled, since the verdict was `ask`.

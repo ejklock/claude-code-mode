@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { CALL_LIMIT, CallLedger, CodemodeBridge, thrownOutcome } from '../hooks/bridge.ts'
+import type { BridgeHost } from '../hooks/bridge.ts'
 import { exposureSync } from '../hooks/expose.ts'
 import { readExposure } from '../hooks/exposure.ts'
 import { EXPOSED_DOCS, GUIDELINE, codeDescription, describeCodemode, toolDocs } from '../hooks/describe.ts'
@@ -28,14 +29,39 @@ type Plan = {
   readWaitsForPosts?: number
   /** Every answer POST is refused by the transport. */
   postFails?: boolean
+  /** What the engine's permission check answers for a tool; absent means allow. A throw makes the check itself fail. */
+  verdict?: (tool: string) => { decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }
 }
 type Post = { url: string; socketPath: string | undefined; body: Record<string, unknown> }
 
 type StandIn = {
+  checks: { tool: string; input: Record<string, unknown> }[]
   posts: Post[]
   spawned: { argv: readonly string[]; input: string | undefined }[]
   toolsSeen: string[]
   bashInputs: Record<string, unknown>[]
+}
+
+/** Stands in for the socket the answers are POSTed to: it records each answer and wakes whoever waits for that many. */
+function standInPosts(on: On, refused: boolean, posts: Post[], waiters: { count: number; release: () => void }[]): void {
+  on('http.fetch', (_$, e) => {
+    if (refused) return { deny: 'the socket is gone' }
+    posts.push({
+      url: e.url,
+      socketPath: e.init?.socketPath,
+      body: JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>,
+    })
+    for (const waiter of waiters) if (posts.length >= waiter.count) waiter.release()
+    return { value: { status: 204, ok: true, headers: {}, text: '' } }
+  })
+}
+
+/** Stands in for the engine's permission check: it answers `verdict`, or allow, and records what it was asked. */
+function standInCheck(on: On, verdict: Plan['verdict'], asked: StandIn['checks']): void {
+  on('tool.check', (_$, e) => {
+    asked.push({ tool: e.tool, input: { ...(e.input as Record<string, unknown>) } })
+    return verdict?.(e.tool) ?? { decision: 'allow' as const }
+  })
 }
 
 /**
@@ -43,23 +69,15 @@ type StandIn = {
  * process) and for the engine's tools; it tests the mod's logic alone.
  */
 function standIn(on: On, plan: Plan): StandIn {
-  const stand: StandIn = { posts: [], spawned: [], toolsSeen: [], bashInputs: [] }
+  const stand: StandIn = { checks: [], posts: [], spawned: [], toolsSeen: [], bashInputs: [] }
+  standInCheck(on, plan.verdict, stand.checks)
   const waiters: { count: number; release: () => void }[] = []
   const arrived = (count: number): Promise<void> =>
     stand.posts.length >= count
       ? Promise.resolve()
       : new Promise(release => waiters.push({ count, release }))
 
-  on('http.fetch', (_$, e) => {
-    if (plan.postFails === true) return { deny: 'the socket is gone' }
-    stand.posts.push({
-      url: e.url,
-      socketPath: e.init?.socketPath,
-      body: JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>,
-    })
-    for (const waiter of waiters) if (stand.posts.length >= waiter.count) waiter.release()
-    return { value: { status: 204, ok: true, headers: {}, text: '' } }
-  })
+  standInPosts(on, plan.postFails === true, stand.posts, waiters)
 
   on('process.spawn', async function* (_$, e) {
     stand.spawned.push({ argv: e.argv, input: e.input })
@@ -255,6 +273,132 @@ describe('a refused nested call', () => {
   })
 })
 
+describe('the engine verdict before a nested call', () => {
+  const DENIED = 'Permission to use Bash with command echo denied has been denied.'
+  const ASKED = "Claude requested permissions to write to /work/a.txt, but you haven't granted it yet."
+
+  test('a deny verdict answers the script with the tool and reason, never runs the tool, and the ledger lists it denied', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo denied' }), { waitForPosts: 1 }, failedDone('caught')],
+      verdict: () => ({ decision: 'deny', reason: DENIED, rule: 'Bash(echo denied:*)' }),
+    })
+    const reply = await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `Bash: ${DENIED}` })
+    expect(stand.toolsSeen).toEqual([])
+    expect(reply.deny).toContain(`#1 Bash {"command":"echo denied"} — denied: Bash: ${DENIED}`)
+    expect(reply.deny).not.toContain('unknown')
+  })
+
+  test('an ask verdict is refused the same way with the ask reason', async ($, on) => {
+    const files = standInFileTools(on)
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Write', { file_path: '/work/a.txt', content: 'one' }), { waitForPosts: 1 }, done('caught')],
+      verdict: () => ({ decision: 'ask', reason: ASKED }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `Write: ${ASKED}` })
+    expect(files.inputs).toEqual([])
+  })
+
+  /** Runs one nested Bash call through the bridge over a typed host whose check is `checkTool`; the test engine cannot make a hook throw or answer a shape outside its types. */
+  async function runWithCheck(checkTool: BridgeHost['checkTool']): Promise<{ answers: Record<string, unknown>[]; ran: string[] }> {
+    const answers: Record<string, unknown>[] = []
+    const ran: string[] = []
+    let release = (): void => {}
+    const posted = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const host: BridgeHost = {
+      pluginRoot: '/plugin',
+      spawn: (async function* () {
+        yield { stream: 'stdout' as const, text: listening }
+        yield { stream: 'stdout' as const, text: call(1, 'Bash', { command: 'echo x' }) }
+        await posted
+        yield { stream: 'stdout' as const, text: done('caught') }
+        return { code: 0, signal: null }
+      }) as unknown as BridgeHost['spawn'],
+      checkTool,
+      callTool: async input => {
+        ran.push(input.tool)
+        return { result: 'unused', text: 'ran' } as Awaited<ReturnType<BridgeHost['callTool']>>
+      },
+      listTools: async () => [],
+      post: async (_url, init) => {
+        answers.push(JSON.parse(init.body ?? '{}') as Record<string, unknown>)
+        release()
+        return { status: 204, ok: true, headers: {}, text: '' }
+      },
+      publish: async () => undefined,
+      now: async () => 1_000,
+      sleep: async () => undefined,
+    }
+    await new CodemodeBridge(host, 1_000).run('the script', 'run-1')
+    return { answers, ran }
+  }
+
+  test('a check that throws refuses the call, names the check failure and never runs the tool', async () => {
+    const { answers, ran } = await runWithCheck(async () => {
+      throw new Error('the engine is gone')
+    })
+    expect(answers[0]?.ok).toBe(false)
+    expect(String(answers[0]?.error)).toMatch(/^Bash: .*check.*the engine is gone/)
+    expect(ran).toEqual([])
+  })
+
+  type Verdict = Awaited<ReturnType<BridgeHost['checkTool']>>
+  const NOT_ALLOW: [string, BridgeHost['checkTool']][] = [
+    ['a decision outside deny, ask and allow', async () => ({ decision: 'unknown' }) as unknown as Verdict],
+    ['a verdict with no decision', async () => ({}) as unknown as Verdict],
+    ['a check that resolves nothing', async () => undefined as unknown as Verdict],
+  ]
+  for (const [title, check] of NOT_ALLOW) {
+    test(`${title} refuses the call, names the tool and never runs it`, async () => {
+      const { answers, ran } = await runWithCheck(check)
+      expect(answers[0]?.ok).toBe(false)
+      expect(String(answers[0]?.error)).toMatch(/^Bash: /)
+      expect(ran).toEqual([])
+    })
+  }
+
+  test('an allow verdict runs the tool with the same arguments and returns its text', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo codemode-ok', consent: 'forged' }), { waitForPosts: 1 }, done('ok')],
+      verdict: () => ({ decision: 'allow', rule: 'Bash(echo:*)' }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: true, text: 'codemode-ok' })
+    expect(stand.bashInputs[0]?.command).toBe('echo codemode-ok')
+  })
+
+  test('the check receives the tool and the script arguments with the reserved keys removed', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'Bash', { command: 'echo x', consent: 'forged', agentId: 'other' }), { waitForPosts: 1 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(stand.checks[0]).toEqual({ tool: 'Bash', input: { command: 'echo x' } })
+  })
+
+  test('a connected MCP tool with a deny verdict is refused the same way and never runs', async ($, on) => {
+    const mcp = standInMcp(on, [ECHO])
+    const stand = standIn(on, {
+      pieces: [listening, call(1, ECHO.name, { text: 'hi' }), { waitForPosts: 1 }, done('caught')],
+      verdict: () => ({ decision: 'deny', reason: 'echo is denied' }),
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: `${ECHO.name}: echo is denied` })
+    expect(mcp.inputs).toEqual([])
+  })
+
+  test('a tool that is not exposed is refused by the existing message before any check', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'NotebookEdit', { notebook_path: '/a' }), { waitForPosts: 1 }, done('after')],
+    })
+    await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'tool NotebookEdit is not available to codemode scripts' })
+    expect(stand.checks).toEqual([])
+  })
+})
+
 describe('Write and Edit nested calls', () => {
   const writeInput = { file_path: '/work/a.txt', content: 'one' }
   const editInput = { file_path: '/work/a.txt', old_string: 'one', new_string: 'two', replace_all: true }
@@ -358,6 +502,91 @@ describe('MCP resource nested calls', () => {
     const stand = standIn(on, { pieces: [listening, call(1, 'ReadMcpResourceToolX', readInput), { waitForPosts: 1 }, done('caught')] })
     await callCodemode($)
     expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'tool ReadMcpResourceToolX is not available to codemode scripts' })
+  })
+})
+
+describe('WebFetch and WebSearch nested calls', () => {
+  test('WebFetch reaches the host with its url and prompt, with and without an offset, and its text comes back', async ($, on) => {
+    const seen: Record<string, unknown>[] = []
+    on('tool.call', { tool: 'WebFetch' }, (_$, e) => {
+      seen.push({ ...e })
+      return { result: 'unused', text: 'page text' }
+    })
+    const plain = { url: 'https://a.example/page', prompt: 'summarize' }
+    const paged = { ...plain, offset: 2000 }
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'WebFetch', plain), call(2, 'WebFetch', paged), { waitForPosts: 2 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ tool: 'WebFetch', ...plain })
+    expect(seen[0]).not.toHaveProperty('offset')
+    expect(seen[1]).toMatchObject({ tool: 'WebFetch', ...paged })
+    expect(stand.posts.map(post => post.body)).toEqual([
+      { id: 1, ok: true, text: 'page text' },
+      { id: 2, ok: true, text: 'page text' },
+    ])
+  })
+
+  test('WebSearch reaches the host with its domain list as the same array, or with none, and its text comes back', async ($, on) => {
+    const seen: Record<string, unknown>[] = []
+    on('tool.call', { tool: 'WebSearch' }, (_$, e) => {
+      seen.push({ ...e })
+      return { result: 'unused', text: 'hits' }
+    })
+    const listed = { query: 'codemode', allowed_domains: ['a.example', 'b.example'] }
+    const bare = { query: 'codemode' }
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'WebSearch', listed), call(2, 'WebSearch', bare), { waitForPosts: 2 }, done('ok')],
+    })
+    await callCodemode($)
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ tool: 'WebSearch', ...listed })
+    expect(seen[1]).toMatchObject({ tool: 'WebSearch', ...bare })
+    expect(seen[1]).not.toHaveProperty('allowed_domains')
+    expect(seen[1]).not.toHaveProperty('blocked_domains')
+    expect(stand.posts.map(post => post.body)).toEqual([
+      { id: 1, ok: true, text: 'hits' },
+      { id: 2, ok: true, text: 'hits' },
+    ])
+  })
+
+  test('a WebFetch the session does not have rejects the script with the tool name and the host reason, and the ledger lists it', async ($, on) => {
+    const stand = standIn(on, {
+      pieces: [listening, call(1, 'WebFetch', { url: 'https://a.example', prompt: 'p' }), { waitForPosts: 1 }, failedDone('caught')],
+    })
+    const reply = await callCodemode($)
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'WebFetch: no implementation for tool.call' })
+    expect(reply.deny).toContain('#1 WebFetch {"url":"https://a.example","prompt":"p"} — unknown: no implementation for tool.call')
+  })
+
+  test('a WebSearch the session does not have rejects only its own call while WebFetch in the same script succeeds', async ($, on) => {
+    on('tool.call', { tool: 'WebFetch' }, () => ({ result: 'unused', text: 'page text' }))
+    const stand = standIn(on, {
+      pieces: [
+        listening,
+        call(1, 'WebFetch', { url: 'https://a.example', prompt: 'p' }),
+        call(2, 'WebSearch', { query: 'q' }),
+        { waitForPosts: 2 },
+        failedDone('caught'),
+      ],
+    })
+    const reply = await callCodemode($)
+    expect(stand.posts.map(post => post.body)).toEqual([
+      { id: 1, ok: true, text: 'page text' },
+      { id: 2, ok: false, error: 'WebSearch: no implementation for tool.call' },
+    ])
+    expect(reply.deny).toContain('#1 WebFetch {"url":"https://a.example","prompt":"p"} — done: page text')
+    expect(reply.deny).toContain('#2 WebSearch {"query":"q"} — unknown: no implementation for tool.call')
+  })
+
+  test('a rejection with an empty message still names the tool', () => {
+    expect(thrownOutcome(1, 'WebSearch', new Error(''))).toEqual({
+      answer: { id: 1, ok: false, error: 'WebSearch failed' },
+      state: 'failed',
+      reason: '',
+      unknown: true,
+    })
   })
 })
 
@@ -1009,8 +1238,8 @@ describe('a failed run tells a failed call from one with an unknown outcome', ()
   })
 
   test('Proves C1: a thrown Error is unknown with its message', () => {
-    expect(thrownOutcome(7, new Error('connection reset'))).toEqual({
-      answer: { id: 7, ok: false, error: 'connection reset' },
+    expect(thrownOutcome(7, 'Edit', new Error('connection reset'))).toEqual({
+      answer: { id: 7, ok: false, error: 'Edit: connection reset' },
       state: 'failed',
       reason: 'connection reset',
       unknown: true,
@@ -1018,8 +1247,8 @@ describe('a failed run tells a failed call from one with an unknown outcome', ()
   })
 
   test('Proves C1: a thrown non-Error value is unknown with its string', () => {
-    expect(thrownOutcome(7, 'socket closed')).toEqual({
-      answer: { id: 7, ok: false, error: 'socket closed' },
+    expect(thrownOutcome(7, 'Edit', 'socket closed')).toEqual({
+      answer: { id: 7, ok: false, error: 'Edit: socket closed' },
       state: 'failed',
       reason: 'socket closed',
       unknown: true,
@@ -1070,7 +1299,7 @@ describe('a failed run tells a failed call from one with an unknown outcome', ()
     const stand = standIn(on, { pieces: [listening, call(1, 'Edit', edit), { waitForPosts: 1 }, done('caught')] })
     const reply = await callCodemode($)
     expect(reply).toEqual({ result: 'caught' })
-    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'no implementation for tool.call' })
+    expect(stand.posts[0]?.body).toEqual({ id: 1, ok: false, error: 'Edit: no implementation for tool.call' })
     const runs = stored() as { calls: { state: string; reason?: string }[] }[]
     expect(runs[0]?.calls.map(row => [row.state, row.reason])).toEqual([['failed', 'no implementation for tool.call']])
   })
@@ -1154,6 +1383,7 @@ describe('a done nested call whose tool ran read-only', () => {
         yield { stream: 'stdout' as const, text: failedDone('boom') }
         return { code: 0, signal: null }
       },
+      checkTool: async () => ({ decision: 'allow' as const }),
       callTool: async (input: { tool: string }) =>
         input.tool === 'Read'
           ? { result: 'unused', text: 'listing', isReadOnly: true as const }
@@ -1168,6 +1398,7 @@ describe('a done nested call whose tool ran read-only', () => {
         runs = change(runs)
       },
       now: async () => 1_000,
+      sleep: async () => undefined,
     }
     const outcome = await new CodemodeBridge(host as never, 1_000).run('the script', 'run-1')
     expect(outcome.ok).toBe(false)
@@ -1613,5 +1844,195 @@ describe('the codemode mode, instructions line names', () => {
     expect(added).toContain('mcp__my_server__*')
     expect(added).not.toContain('my.server')
     expect(added).not.toContain('my server')
+  })
+})
+
+describe('a script deadline that passes during a WebFetch call', () => {
+  const fetchInput = { url: 'https://a.example', prompt: 'p' }
+  const DEADLINE_MS = 40
+
+  type Piece = string | { waitForFetches: number } | { waitForPosts: number }
+
+  /** `until` waits for a condition that `wake` re-checks. */
+  function gate() {
+    const waiters: { reached: () => boolean; release: () => void }[] = []
+    const wake = (): void => {
+      for (const waiter of waiters) if (waiter.reached()) waiter.release()
+    }
+    const until = (reached: () => boolean): Promise<void> =>
+      reached() ? Promise.resolve() : new Promise<void>(release => waiters.push({ reached, release }))
+    return { until, wake }
+  }
+
+  /**
+   * A host whose child yields each piece in turn, waiting on the calls it saw and the answers it received;
+   * `fetchAnswers` decides how long a WebFetch call takes. Its sleep ends at once, so the grace the bridge
+   * gives a call still running costs no time.
+   */
+  function deadlineHost(pieces: Piece[], fetchAnswers: (call: number) => Promise<string>) {
+    const spawned: string[] = []
+    let fetches = 0
+    const posts: Record<string, unknown>[] = []
+    const { until, wake } = gate()
+    const reached = (piece: Exclude<Piece, string>): boolean =>
+      'waitForFetches' in piece ? fetches >= piece.waitForFetches : posts.length >= piece.waitForPosts
+    const host = {
+      pluginRoot: '/plugin',
+      spawn: async function* (input: { input?: string }) {
+        spawned.push(input.input ?? '')
+        for (const piece of pieces) {
+          if (typeof piece === 'string') yield { stream: 'stdout' as const, text: piece }
+          else await until(() => reached(piece))
+        }
+        return { code: 0, signal: null }
+      },
+      checkTool: async () => ({ decision: 'allow' as const }),
+      callTool: async () => {
+        fetches += 1
+        wake()
+        return { result: 'unused', text: await fetchAnswers(fetches) }
+      },
+      listTools: async () => [],
+      post: async (_url: string, init: { body?: string }) => {
+        posts.push(JSON.parse(init.body ?? '{}') as Record<string, unknown>)
+        wake()
+        return { status: 204, ok: true, headers: {}, text: '' }
+      },
+      publish: async () => undefined,
+      now: async () => 1_000,
+      sleep: async () => undefined,
+    }
+    return { host, spawned, posts }
+  }
+
+  const never = (): Promise<string> => new Promise(() => undefined)
+  const timedOut = failedDone(`script timed out after ${DEADLINE_MS} ms`)
+
+  test('the call still running at the deadline is listed as unknown with the may-have-run note', async () => {
+    const { host, spawned } = deadlineHost([listening, call(1, 'WebFetch', fetchInput), { waitForFetches: 1 }, timedOut], never)
+    const outcome = await new CodemodeBridge(host as never, DEADLINE_MS).run('the script', 'run-1')
+    expect(JSON.parse(spawned[0] ?? '{}').timeoutMs).toBe(DEADLINE_MS)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.ok ? '' : outcome.error).toBe(
+      `script timed out after ${DEADLINE_MS} ms\n\n${SECTION}\n#1 WebFetch ${JSON.stringify(fetchInput)} — unknown: no answer ${MAY_HAVE_RUN}`,
+    )
+  })
+
+  test('a call that answers just before the deadline is listed as done', async () => {
+    const { host, posts } = deadlineHost(
+      [listening, call(1, 'WebFetch', fetchInput), { waitForPosts: 1 }, timedOut],
+      async () => 'page text',
+    )
+    const outcome = await new CodemodeBridge(host as never, DEADLINE_MS).run('the script', 'run-1')
+    expect(posts).toEqual([{ id: 1, ok: true, text: 'page text' }])
+    expect(outcome.ok ? '' : outcome.error).toBe(
+      `script timed out after ${DEADLINE_MS} ms\n\n${SECTION}\n#1 WebFetch ${JSON.stringify(fetchInput)} — done: page text`,
+    )
+  })
+
+  test('a call issued after the first completed is listed apart with its own state', async () => {
+    const { host } = deadlineHost(
+      [listening, call(1, 'WebFetch', fetchInput), { waitForPosts: 1 }, call(2, 'WebFetch', fetchInput), { waitForFetches: 2 }, timedOut],
+      count => (count === 1 ? Promise.resolve('first page') : never()),
+    )
+    const outcome = await new CodemodeBridge(host as never, DEADLINE_MS).run('the script', 'run-1')
+    const target = JSON.stringify(fetchInput)
+    expect(outcome.ok ? '' : outcome.error).toBe(
+      `script timed out after ${DEADLINE_MS} ms\n\n${SECTION}\n#1 WebFetch ${target} — done: first page\n#2 WebFetch ${target} — unknown: no answer ${MAY_HAVE_RUN}`,
+    )
+  })
+})
+
+describe('the grace a run gives a nested call still running at its end', () => {
+  const fetchInput = { url: 'https://a.example', prompt: 'p' }
+  const target = JSON.stringify(fetchInput)
+
+  /**
+   * A host whose WebFetch call answers only when `answer` is called and whose sleep ends only when `releaseSleep`
+   * is called; the child issues one call, then ends with `closing`.
+   */
+  function manualHost(closing: string) {
+    let answer: (text: string) => void = () => undefined
+    let releaseSleep: () => void = () => undefined
+    let called = false
+    let sleeping = false
+    const host = {
+      pluginRoot: '/plugin',
+      spawn: async function* () {
+        yield { stream: 'stdout' as const, text: listening }
+        yield { stream: 'stdout' as const, text: call(1, 'WebFetch', fetchInput) }
+        while (!called) await Promise.resolve()
+        yield { stream: 'stdout' as const, text: closing }
+        return { code: 0, signal: null }
+      },
+      checkTool: async () => ({ decision: 'allow' as const }),
+      callTool: async () => {
+        called = true
+        return { result: 'unused', text: await new Promise<string>(resolve => (answer = resolve)) }
+      },
+      listTools: async () => [],
+      post: async () => ({ status: 204, ok: true, headers: {}, text: '' }),
+      publish: async () => undefined,
+      now: async () => 1_000,
+      sleep: () => {
+        sleeping = true
+        return new Promise<void>(resolve => (releaseSleep = resolve))
+      },
+    }
+    return {
+      host,
+      answer: (text: string) => answer(text),
+      releaseSleep: () => releaseSleep(),
+      sleeping: () => sleeping,
+    }
+  }
+
+  const settle = async (): Promise<void> => {
+    for (let turn = 0; turn < 100; turn += 1) await Promise.resolve()
+  }
+
+  const watch = <T>(promise: Promise<T>): { settled: () => boolean } => {
+    let settled = false
+    promise.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    return { settled: () => settled }
+  }
+
+  test('a failed run whose call answers before the grace ends lists it as done', async () => {
+    const stand = manualHost(failedDone('script failed'))
+    const run = new CodemodeBridge(stand.host as never, 1000).run('the script', 'run-1')
+    await settle()
+    expect(stand.sleeping()).toBe(true)
+    stand.answer('page text')
+    const outcome = await run
+    expect(outcome.ok ? '' : outcome.error).toBe(`script failed\n\n${SECTION}\n#1 WebFetch ${target} — done: page text`)
+  })
+
+  test('a failed run whose call answers only after the grace ends lists it as unknown with the may-have-run note', async () => {
+    const stand = manualHost(failedDone('script failed'))
+    const run = new CodemodeBridge(stand.host as never, 1000).run('the script', 'run-1')
+    await settle()
+    expect(stand.sleeping()).toBe(true)
+    stand.releaseSleep()
+    const outcome = await run
+    stand.answer('page text')
+    expect(outcome.ok ? '' : outcome.error).toBe(
+      `script failed\n\n${SECTION}\n#1 WebFetch ${target} — unknown: no answer ${MAY_HAVE_RUN}`,
+    )
+  })
+
+  test('a successful run waits for its pending call however long that takes', async () => {
+    const stand = manualHost(done('finished'))
+    const run = new CodemodeBridge(stand.host as never, 1000).run('the script', 'run-1')
+    const watched = watch(run)
+    await settle()
+    stand.releaseSleep()
+    await settle()
+    expect(watched.settled()).toBe(false)
+    stand.answer('page text')
+    const outcome = await run
+    expect(outcome.ok).toBe(true)
   })
 })

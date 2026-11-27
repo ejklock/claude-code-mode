@@ -62,3 +62,7 @@ One `codemode` call runs one script and makes zero or more nested calls. Each ne
 ## Amendment Log
 
 Amendments are appended here as `## Amendment N — YYYY-MM-DD: summary`; the sections above are not edited once ratified.
+
+## Amendment 1 — 2026-11-27: the bridge asks the permission verdict before each nested call
+
+The first non-negotiable gives a reason that no longer holds on Claude Code 2.1.328 to 2.1.332: a plugin's `$.tool.call` runs the tool without the permission decision, deny rules and asks alike, while hooks still run ([issue 0028](issues/0028-the-headless-check-enforces-its-own-deny-rules-whatever-settings-the-invoking-session-carries.md)). The non-negotiable itself stands: every nested call still runs through `$.tool.call`, and no source file calls `$.mcp.call`. In addition, the bridge asks the engine's own verdict with `$.tool.check` before each nested call and runs the call only on `allow` ([issue 0029](issues/0029-the-bridge-refuses-a-nested-call-the-session-permission-rules-deny-because-the-engine-stopped-applying-them.md)). The mod still decides no permission itself.

@@ -70,6 +70,7 @@ function host(on: On): Host {
     return { value: { isSet: true as const, version: current.version + 1 } }
   })
   on('ui.render', (_$, e) => ({ type: 'Text', children: [`ENGINE-DRAWN ${e.component}`] }))
+  on('tool.check', () => ({ decision: 'allow' as const }))
   return {
     runs: () => (held.get('codemode/runs/')?.value ?? []) as CodemodeRun[],
     seed: runs => held.set('codemode/runs/', { value: runs, version: 1 }),

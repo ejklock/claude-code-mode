@@ -236,13 +236,13 @@ describe("the codemode child declares the run request's MCP tools", () => {
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: ALL_TOOLS lists the MCP tools beside the seven built-ins', async () => {
+  it('ALL_TOOLS lists the MCP tools beside the nine built-ins', async () => {
     const outcome = await runWithMcpTools(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, FAKE_TOOLS)
     assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS, 'mcp__fake__echo', 'mcp__fake_srv__ping'])
     assertCleanExit(outcome)
   })
 
-  it('Proves C1: a run request with no MCP tools declares the seven built-ins only', async () => {
+  it('a run request with no MCP tools declares the nine built-ins only', async () => {
     const outcome = await runChild(`text(JSON.stringify(ALL_TOOLS.map(tool => tool.name)))`, answerByTool)
     assert.deepEqual(JSON.parse(outcome.done.output), [...EXPOSED_TOOLS])
     assertCleanExit(outcome)
@@ -332,6 +332,7 @@ const makeHost = (overrides: Partial<BridgeHost>): BridgeHost => ({
   spawn: () => {
     throw new Error('this test gave the host no spawn')
   },
+  checkTool: async () => ({ decision: 'allow' }),
   callTool: async () => ({ result: 'unused', text: 'FILE-BODY' }) as Awaited<ReturnType<BridgeHost['callTool']>>,
   listTools: async () => [],
   post: async () => {
@@ -447,6 +448,76 @@ async function runScripted(end: ScriptedEnd): Promise<{ outcome: CodemodeOutcome
   const outcome = await new CodemodeBridge(host, 20_000).run('unused', 'run-1')
   return { outcome, elapsedMs: Date.now() - started }
 }
+
+/** Runs a script against a child with a short deadline; nested calls are never answered, and the wall time is returned. */
+async function runWithDeadline(code: string, timeoutMs: number, limitMs: number): Promise<{ outcome: Outcome; elapsedMs: number }> {
+  const started = Date.now()
+  const child = spawn('node', [CHILD], { stdio: ['pipe', 'pipe', 'inherit'] })
+  const exited = new Promise<number | null>(resolve => child.on('close', resolve))
+  child.stdin.end(JSON.stringify({ code, timeoutMs }))
+  const calls: CallMessage[] = []
+  let socketPath = ''
+  let done: DoneMessage | undefined
+  let killed = false
+  // A child that does not finish in time is killed so the case fails instead of hanging.
+  const killTimer = setTimeout(() => {
+    killed = true
+    child.kill('SIGKILL')
+  }, limitMs)
+  let exitCode: number | null
+  try {
+    for await (const line of createInterface({ input: child.stdout })) {
+      const message = parseChildMessage(line)
+      if (message?.type === 'listening') socketPath = message.socketPath
+      if (message?.type === 'call') calls.push(message)
+      if (message?.type === 'done') done = message
+    }
+    exitCode = await exited
+  } finally {
+    clearTimeout(killTimer)
+  }
+  const elapsedMs = Date.now() - started
+  assert.ok(!killed, `child did not exit within ${limitMs} ms`)
+  assert.ok(done, 'child closed its output without a closing line')
+  return { outcome: { done, calls, postedIds: [], socketPath, exitCode }, elapsedMs }
+}
+
+describe('the codemode child stops a script at its deadline', () => {
+  const DEADLINE_MS = 300
+  const BOUND_MS = 2_000 + DEADLINE_MS
+  // The helper kills a child that outlives LIMIT_MS; the test's own timeout sits above it and fails the case if even that stalls.
+  const LIMIT_MS = BOUND_MS + 3_000
+  const TEST_TIMEOUT_MS = LIMIT_MS + 5_000
+  const TIMEOUT_MESSAGE = `Execution timed out after ${DEADLINE_MS} ms`
+
+  it('Proves the deadline: a script that never yields ends with a timeout error and the child exits', { timeout: TEST_TIMEOUT_MS }, async () => {
+    const { outcome, elapsedMs } = await runWithDeadline(`while (true) {}`, DEADLINE_MS, LIMIT_MS)
+    assert.equal(outcome.done.ok, false)
+    assert.equal(outcome.done.ok ? '' : outcome.done.error, TIMEOUT_MESSAGE)
+    assert.ok(elapsedMs < BOUND_MS, `took ${elapsedMs} ms`)
+    assertCleanExit(outcome)
+  })
+
+  it('Proves the deadline: a script waiting on a nested call that never answers ends with a timeout error', { timeout: TEST_TIMEOUT_MS }, async () => {
+    const { outcome, elapsedMs } = await runWithDeadline(`await tools.Read({ file_path: '/a' })`, DEADLINE_MS, LIMIT_MS)
+    assert.equal(outcome.done.ok, false)
+    assert.equal(outcome.done.ok ? '' : outcome.done.error, TIMEOUT_MESSAGE)
+    assert.equal(outcome.calls.length, 1)
+    assert.ok(elapsedMs < BOUND_MS, `took ${elapsedMs} ms`)
+    assertCleanExit(outcome)
+  })
+
+  it('Proves the deadline: a script that ends before its deadline succeeds', { timeout: TEST_TIMEOUT_MS }, async () => {
+    const { outcome } = await runWithDeadline(
+      `const end = Date.now() + 100; while (Date.now() < end) {}; text('in time')`,
+      1_500,
+      LIMIT_MS,
+    )
+    assert.equal(outcome.done.ok, true)
+    assert.equal(outcome.done.output, 'in time')
+    assertCleanExit(outcome)
+  })
+})
 
 describe('a late-answer failure recorded before the closing line is read', () => {
   it('Proves C3: the closing line that follows leads, and the delivery problem follows it', async () => {

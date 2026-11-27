@@ -4,7 +4,7 @@
 
 **Inspired by [Pi's codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md)**, by Earendil. Earendil's post [**"You Said No MCP!"**](https://earendil.com/posts/you-said-no-mcp/) explains the idea and why it works, and Armin Ronacher's [**"What is Codemode"**](https://lucumr.pocoo.org/2026/10/6/codemode/) describes it from the harness side. This project does not reimplement it. **It is a bridge:** it runs Pi's own script runtime, [`@earendil-works/pi-codemode`](https://github.com/earendil-works/pi/tree/main/packages/codemode) (QuickJS in WebAssembly), and connects each `tools.*` call the script makes to Claude Code's own tool call. Your permission rules, prompts and hooks still apply to every one of them, and a script written for Pi's codemode reads the same here.
 
-> **Status: pilot (v0.7.4).** It exposes `Read`, `Bash`, `Write`, `Edit`, the three MCP resource tools, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the task-level savings are measured — see [Benchmarks](#benchmarks) and [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md).
+> **Status: pilot (v0.8.0).** It exposes `Read`, `Bash`, `Write`, `Edit`, the three MCP resource tools, `WebFetch`, `WebSearch`, and every MCP tool connected in the session. The design is in [ADR 0001](docs/adr/0001-a-claude-code-mod-hosts-the-pi-codemode-runtime-in-a-node-child-process-and-routes-every-nested-call-through-the-session-s-tool-call.md), which is still *Proposed*. The bridge overhead and the task-level savings are measured — see [Benchmarks](#benchmarks) and [issue 0005](docs/issues/0005-benchmarks-show-the-bridge-overhead-and-the-token-turn-and-time-savings-of-codemode-per-task.md).
 
 ![Claude Code picks the codemode tool on its own: one script lists the TypeScript files with git, reads all five in parallel, filters the TODO lines, and only the filtered output returns](docs/media/codemode-demo.gif)
 
@@ -12,7 +12,7 @@
 
 ## What it is and where it shines
 
-**What it is:** one tool, `codemode`. The model sends a short JavaScript script. The script runs in a sandbox and calls the session's tools as `tools.Read(...)`, `tools.Bash(...)`, `tools.Write(...)`, `tools.Edit(...)`, the MCP resource tools (`tools.ListMcpResourcesTool(...)`, `tools.ReadMcpResourceTool(...)`, `tools.ReadMcpResourceDirTool(...)`) and `tools.mcp__server__tool(...)`. Only what the script prints returns to the model. Every nested call still meets your permission rules, prompts and hooks.
+**What it is:** one tool, `codemode`. The model sends a short JavaScript script. The script runs in a sandbox and calls the session's tools as `tools.Read(...)`, `tools.Bash(...)`, `tools.Write(...)`, `tools.Edit(...)`, the MCP resource tools (`tools.ListMcpResourcesTool(...)`, `tools.ReadMcpResourceTool(...)`, `tools.ReadMcpResourceDirTool(...)`), the web tools (`tools.WebFetch(...)`, `tools.WebSearch(...)`) and `tools.mcp__server__tool(...)`. Only what the script prints returns to the model. Every nested call still meets your permission rules, prompts and hooks.
 
 **What it is for:** work that takes many tool calls, where each call needs a model turn and each result fills the context.
 
@@ -85,7 +85,7 @@ sequenceDiagram
 
 - **The tool:** the mod registers the tool, which the model sees as `mcp__codemode__codemode`.
 - **Separate process:** a mod's hooks module has no WebAssembly and no `eval`. So each script runs in a short-lived Node child process that hosts `pi-codemode`, pinned to an exact version.
-- **Permissions:** every nested call runs through `$.tool.call`, never `$.mcp.call`. Your allow and deny rules, permission prompts and `PreToolUse` hooks see each one.
+- **Permissions:** every nested call runs through `$.tool.call`, never `$.mcp.call`. Before each one the bridge asks the engine's own verdict (`$.tool.check`) and runs the call only on `allow`; a `deny`, an `ask` or a check that fails refuses it with the reason, and the script sees a rejection. The bridge decides nothing itself and reads no settings. Your `PreToolUse` hooks still see each call that runs.
 - **Tool hints:** read as an MCP tool, `codemode` is not read-only, may be destructive, is not idempotent and is open-world, because a script does whatever its nested calls do. These are the MCP defaults for an undeclared tool, and the mods API (`$.tool.register`, builds 2.1.291 to 2.1.296) takes no annotations yet, so the tool declares none; a check in the test suite fails on the first build whose declarations take them ([issue 0016](docs/issues/0016-the-codemode-tool-declares-the-four-mcp-tool-hints-once-the-mods-api-takes-them-and-a-check-tells-the-day-it-does.md)). The warning a host would base on those hints happens here per nested call, at its own permission check.
 - **Denials:** a denied or failed call throws an `Error` inside the script, and the script can catch it and continue.
 
@@ -148,10 +148,12 @@ In a script:
 | `await tools.ListMcpResourcesTool({ server? })` | Lists the resources MCP servers offer; resolves to the list. |
 | `await tools.ReadMcpResourceTool({ server, uri })` | Reads an MCP resource; resolves to its text. |
 | `await tools.ReadMcpResourceDirTool({ server, uri })` | Lists the resources under an MCP resource directory; resolves to the list. |
+| `await tools.WebFetch({ url, prompt, offset? })` | Fetches a web page and answers the prompt about it; resolves to the answer. |
+| `await tools.WebSearch({ query, allowed_domains?, blocked_domains? })` | Searches the web; the domain lists are arrays of strings; resolves to the results. |
 | `await tools.mcp__server__tool(args)` / `await tools["mcp__server__tool"](args)` | Calls a connected MCP tool by its full name; resolves to its text. A tool that is not connected is absent, and `ALL_TOOLS` lists those that are. |
 | `text(value)` / `console.log(value)` | Adds to the output that returns to the model. |
 
-The script is the body of an async function, so top-level `await` works. `return` and `exit()` end the script; only what it prints with `text()` or `console.log()` comes back. Scripts time out after 120 seconds. Every `tools.*` call meets the session's permission mode and rules as a direct call does, so `Write` and `Edit` follow `acceptEdits`, allow rules and deny rules, and a refusal reaches the script as a rejection.
+The script is the body of an async function, so top-level `await` works. `return` and `exit()` end the script; only what it prints with `text()` or `console.log()` comes back. Scripts time out after 120 seconds. Every `tools.*` call is first checked against the session's permission mode and rules through the engine's verdict, so `Write` and `Edit` follow `acceptEdits`, allow rules and deny rules; a call the verdict does not allow, one that would ask included, never runs, and the refusal reaches the script as a rejection.
 
 ### MCP exposure modes
 

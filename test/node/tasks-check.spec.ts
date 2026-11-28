@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -226,6 +226,9 @@ import { createInterface } from 'node:readline'
 const config = JSON.parse(readFileSync(process.argv[process.argv.indexOf('--mcp-config') + 1], 'utf8'))
 const { command, args, env } = Object.values(config.mcpServers)[0]
 const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'inherit'] })
+process.on('exit', () => child.kill())
+process.on('SIGTERM', () => process.exit(1))
+setTimeout(() => process.exit(1), 20000).unref()
 child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover' }) + '\\n')
 for await (const line of createInterface({ input: child.stdout })) {
   writeFileSync(process.env.FAKE_ANSWER, line)
@@ -234,19 +237,26 @@ for await (const line of createInterface({ input: child.stdout })) {
 child.kill()
 `
 
-  it('answers server/discover over stdio in the shape a declaring client parses', () => {
+  it('answers server/discover over stdio in the shape a declaring client parses', t => {
     const scratch = mkdtempSync(join(tmpdir(), 'tasks-check-spec-'))
     try {
       const bin = join(scratch, 'bin')
       mkdirSync(bin)
-      writeFileSync(join(bin, 'claude'), fakeClaude, { mode: 0o755 })
+      const standIn = join(bin, 'claude')
+      writeFileSync(standIn, fakeClaude, { mode: 0o755 })
+      try {
+        accessSync(standIn, constants.X_OK)
+      } catch {
+        t.skip(`the stand-in claude in ${bin} is not executable (noexec mount?); a PATH search would fall through to another claude`)
+        return
+      }
+      symlinkSync(process.execPath, join(bin, 'node'))
       const answerFile = join(scratch, 'answer.json')
       const script = join(dirname(fileURLToPath(import.meta.url)), '../../scripts/tasks-check.ts')
-      spawnSync(process.execPath, [script], {
-        encoding: 'utf8',
-        timeout: 30_000,
-        env: { ...process.env, PATH: `${bin}${delimiter}${process.env['PATH'] ?? ''}`, FAKE_ANSWER: answerFile },
-      })
+      const env = { ...process.env, PATH: bin, FAKE_ANSWER: answerFile }
+      assert.deepEqual(env.PATH.split(delimiter), [bin])
+      const run = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 30_000, env })
+      assert.ok(existsSync(answerFile), `no answer written: status ${run.status}, signal ${run.signal}, error ${run.error?.message}, stderr ${run.stderr}`)
       const answer = JSON.parse(readFileSync(answerFile, 'utf8')) as { result: Record<string, unknown> }
       assert.equal(answer.result['resultType'], 'complete')
       assert.deepEqual(answer.result['_meta'], { 'io.modelcontextprotocol/serverInfo': { name: 'tasks', version: '1.0.0' } })

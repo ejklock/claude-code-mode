@@ -11,8 +11,6 @@
 * [0024 — An ADR decides how codemode could poll MCP events, before any code, comparing a Bash poller with a mod-side client](0024-an-adr-decides-how-codemode-could-poll-mcp-events-before-any-code-comparing-a-bash-poller-with-a-mod-side-client.md) - open
 * [0025 — Research whether codemode scripts should also run Python, measured from the transcripts before any runtime](0025-research-whether-codemode-scripts-should-also-run-python-measured-from-the-transcripts-before-any-runtime.md) - open
 * [0027 — A check tells the day Claude Code declares the MCP tasks extension](0027-a-check-tells-the-day-claude-code-declares-the-mcp-tasks-extension.md) - open
-* [0031 — On an ask verdict the bridge can ask the user once per nested call in an interactive session](0031-on-an-ask-verdict-the-bridge-can-ask-the-user-once-per-nested-call-in-an-interactive-session.md) - open
-* [0032 — The installer offers allow rules for the tools codemode scripts call and merges them on an explicit yes](0032-the-installer-offers-allow-rules-for-the-tools-codemode-scripts-call-and-merges-them-on-an-explicit-yes.md) - open
 
 ## Closed
 
@@ -37,3 +35,5 @@
 * [0028 — The headless check enforces its own deny rules whatever settings the invoking session carries](0028-the-headless-check-enforces-its-own-deny-rules-whatever-settings-the-invoking-session-carries.md) - closed
 * [0029 — The bridge refuses a nested call the session permission rules deny, because the engine stopped applying them](0029-the-bridge-refuses-a-nested-call-the-session-permission-rules-deny-because-the-engine-stopped-applying-them.md) - closed
 * [0030 — The headless MCP checks judge the mod, not the model choices, and pass twice in a row](0030-the-headless-mcp-checks-judge-the-mod-not-the-model-choices-and-pass-twice-in-a-row.md) - closed
+* [0031 — On an ask verdict the bridge can ask the user once per nested call in an interactive session](0031-on-an-ask-verdict-the-bridge-can-ask-the-user-once-per-nested-call-in-an-interactive-session.md) - closed
+* [0032 — The installer offers allow rules for the tools codemode scripts call and merges them on an explicit yes](0032-the-installer-offers-allow-rules-for-the-tools-codemode-scripts-call-and-merges-them-on-an-explicit-yes.md) - closed

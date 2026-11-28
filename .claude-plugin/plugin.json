@@ -36,6 +36,12 @@
       "title": "MCP servers hidden",
       "description": "Servers or tools (server, server__tool, server__prefix*), separated by commas, the model does not see at all.",
       "default": []
+    },
+    "askDialog": {
+      "type": "boolean",
+      "title": "Ask before a nested call the session would ask about",
+      "description": "When the session's permission rules answer ask for a call a codemode script makes, open the engine's own question dialog once for that call and run it only if you allow it. Off by default: such a call is refused. In a non-interactive (-p) run there is no one to ask, so it stays refused.",
+      "default": false
     }
   }
 }

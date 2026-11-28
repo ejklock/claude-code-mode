@@ -25,6 +25,11 @@ export type BridgeHost = {
   spawn: (request: ProcessSpawnRequest) => HookStream<ProcessSpawnChunk, ProcessSpawnResult>
   /** The engine's permission verdict for a call, asked without running it. */
   checkTool: (input: ToolCheckArgs) => Promise<ToolCheckResult>
+  /**
+   * The engine's own question dialog, resolving to the chosen label and rejecting when dismissed or when no one can be
+   * asked. Absent, an `ask` verdict is refused; present, the user's press decides it.
+   */
+  ask?: (question: string, options: readonly string[]) => Promise<string>
   callTool: (input: ToolCallArgs) => Promise<ToolCallResult>
   /** The tools the model has now, built-in and MCP alike. */
   listTools: () => Promise<ToolInfo[]>
@@ -66,13 +71,40 @@ const ESCAPE_SEQUENCES = new RegExp(
   ['\\u001b\\[[0-9;?]*[ -/]*[@-~]', '\\u001b\\][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)?', '\\u001b.?'].join('|'),
   'g',
 )
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g
+// Besides the C0 controls and DEL: NEL, the line and paragraph separators and the bidirectional controls, which
+// reorder or break what a user reads.
+const CONTROL_CHARACTERS = new RegExp('[\\u0000-\\u001f\\u007f\\u0085\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]', 'g')
+const LINE_BREAKS = new RegExp('[\\r\\n\\u0085\\u2028\\u2029]')
+
+function cut(line: string, limit: number, mark = '…'): string {
+  return line.length > limit ? `${line.slice(0, limit - mark.length)}${mark}` : line
+}
 
 /** One printable line: what the state keeps must not carry a terminal's control codes. */
 function firstLine(text: string, limit: number): string {
-  const first = text.split(/[\r\n]/)[0] ?? ''
-  const line = first.replace(ESCAPE_SEQUENCES, '').replaceAll('\t', ' ').replace(CONTROL_CHARACTERS, '').trim()
-  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line
+  const first = text.split(LINE_BREAKS)[0] ?? ''
+  return cut(first.replace(ESCAPE_SEQUENCES, '').replaceAll('\t', ' ').replace(CONTROL_CHARACTERS, '').trim(), limit)
+}
+
+/** The longest call the dialog shows; a longer one is refused rather than cut, so nothing is ever hidden. */
+export const SHOWN_CALL_CHARS = 1500
+const SHOWN_REASON_CHARS = 120
+
+/** Every code unit outside printable ASCII as a `\uXXXX` escape, so no invisible or reordering character reaches a dialog. */
+function asciiOnly(text: string): string {
+  return text.replace(/[^ -~]/g, unit => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
+function sortKeys(_key: string, value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
+}
+
+/**
+ * What the user is asked to approve: the tool and its whole input as JSON with sorted keys, printable ASCII only.
+ */
+function describeCall(tool: string, input: Record<string, unknown>): string {
+  return `${asciiOnly(tool)} ${asciiOnly(JSON.stringify(input, sortKeys))}`
 }
 
 function labelOf(input: Record<string, unknown>): string {
@@ -224,12 +256,19 @@ export class CallLedger {
 
 export type CodemodeOutcome = { ok: true; output: string } | { ok: false; error: string }
 
+const APPROVE_LABEL = 'Allow'
+const REFUSE_LABEL = 'Deny'
+
+type Permit = { ok: true; consent?: { consent: string } } | { ok: false; reason: string }
+
 type CallMessage = Extract<ChildMessage, { type: 'call' }>
 type DoneMessage = Extract<ChildMessage, { type: 'done' }>
 
 type RunState = {
   socketPath: string | undefined
   closing: DoneMessage | undefined
+  /** The child's output stream finished; a closing line may or may not have come. */
+  childEnded: boolean
   problem: string | undefined
   stderr: string
   /** The MCP tool names this run's script may call, besides the built-ins. */
@@ -238,6 +277,9 @@ type RunState = {
   /** Settles when a problem is recorded, so a read blocked on the child can stop. */
   aborted: Promise<void>
   abort: () => void
+  /** Settles when the child's closing line arrives, so an open dialog can stop holding the result. */
+  closed: Promise<void>
+  close: () => void
   tracker: RunTracker
   ledger: CallLedger
 }
@@ -247,9 +289,16 @@ function newRunState(tracker: RunTracker, mcpNames: ReadonlySet<string>): RunSta
   const aborted = new Promise<void>(resolve => {
     abort = resolve
   })
+  let close = (): void => {}
+  const closed = new Promise<void>(resolve => {
+    close = resolve
+  })
   return {
+    closed,
+    close,
     socketPath: undefined,
     closing: undefined,
+    childEnded: false,
     problem: undefined,
     stderr: '',
     mcpNames,
@@ -259,6 +308,11 @@ function newRunState(tracker: RunTracker, mcpNames: ReadonlySet<string>): RunSta
     tracker,
     ledger: new CallLedger(),
   }
+}
+
+/** The script is over once the child closed, its stream finished or a problem was recorded; an approval then comes too late. */
+function runEnded(state: RunState): boolean {
+  return state.closing !== undefined || state.childEnded || state.problem !== undefined
 }
 
 function recordProblem(state: RunState, problem: string): void {
@@ -291,6 +345,7 @@ class LineSplitter {
 export class CodemodeBridge {
   private readonly host: BridgeHost
   private readonly timeoutMs: number
+  private dialogs: Promise<void> = Promise.resolve()
 
   constructor(host: BridgeHost, timeoutMs: number) {
     this.host = host
@@ -311,12 +366,13 @@ export class CodemodeBridge {
   }
 
   /**
-   * A script that ended well has all its calls answered. One that failed (a deadline included) may leave a call
-   * still running in the session; it is waited for only the grace, then the ledger lists it as unknown.
+   * A script that ended well has all its calls answered; one that left a dialog open gave it the grace in `askUser`.
+   * One that failed (a deadline included) may leave a call still running in the session; it is waited for only the
+   * grace, then the ledger lists it as unknown.
    */
   private async awaitAnswers(state: RunState): Promise<void> {
     const settled = Promise.allSettled(state.answers)
-    if (state.closing?.ok !== false) {
+    if (state.closing?.ok === true && state.problem === undefined) {
       await settled
       return
     }
@@ -343,7 +399,10 @@ export class CodemodeBridge {
       while (state.closing === undefined || state.problem === undefined) {
         const next = await Promise.race([stream.next(), state.aborted])
         if (next === undefined) break
-        if (next.done) return this.describeExit(next.value.code, next.value.signal)
+        if (next.done) {
+          state.childEnded = true
+          return this.describeExit(next.value.code, next.value.signal)
+        }
         this.takeChunk(next.value, lines, state)
       }
       // Not awaited: a return() waits behind a read still pending on the child.
@@ -369,10 +428,17 @@ export class CodemodeBridge {
     const message = parseChildMessage(line)
     if (message === undefined) {
       recordProblem(state, `the codemode child sent a malformed line: ${line.slice(0, BAD_LINE_CHARS)}`)
-    } else if (message.type === 'listening') {
+    } else {
+      this.handleMessage(message, state)
+    }
+  }
+
+  private handleMessage(message: ChildMessage, state: RunState): void {
+    if (message.type === 'listening') {
       state.socketPath = message.socketPath
     } else if (message.type === 'done') {
       state.closing = message
+      state.close()
     } else if (state.socketPath === undefined) {
       recordProblem(state, 'the codemode child asked for a tool before it announced its socket')
     } else {
@@ -383,7 +449,7 @@ export class CodemodeBridge {
   private async serve(call: CallMessage, socketPath: string, state: RunState): Promise<void> {
     state.ledger.begin(call)
     await state.tracker.startCall(call)
-    const settled = await this.execute(call, state.mcpNames)
+    const settled = await this.execute(call, state.mcpNames, state)
     state.ledger.settle(call.id, settled)
     await state.tracker.settleCall(call.id, settled)
     try {
@@ -399,7 +465,72 @@ export class CodemodeBridge {
     }
   }
 
-  private async execute(call: CallMessage, mcpNames: ReadonlySet<string>): Promise<Settled> {
+  /**
+   * Whether the engine lets the call run. An `ask` verdict goes to the user's dialog when the host has one; the
+   * press decides, and the `consent` key hands it to the engine's permission path as the user's own words.
+   */
+  private async permit(tool: string, input: Record<string, unknown>, state: RunState): Promise<Permit> {
+    let decision: ToolCheckResult['decision']
+    let reason: string | undefined
+    try {
+      const verdict = await this.host.checkTool({ tool, input })
+      decision = verdict.decision
+      reason = verdict.reason
+    } catch (error) {
+      return { ok: false, reason: `${tool}: the permission check failed: ${errorMessage(error)}` }
+    }
+    if (decision === 'allow') return { ok: true }
+    reason ??= `the session's permission rules answer ${decision}`
+    if (decision !== 'ask' || this.host.ask === undefined) return { ok: false, reason: `${tool}: ${reason}` }
+    const ask = this.host.ask
+    let shown: string
+    try {
+      shown = describeCall(tool, input)
+    } catch {
+      // Nesting deep enough to overflow the stack cannot be shown, so it cannot be asked about.
+      return { ok: false, reason: `${tool}: the call is too long to show safely (nested too deep to show), so it was not run` }
+    }
+    if (shown.length > SHOWN_CALL_CHARS) {
+      const detail = `${shown.length} characters, over the ${SHOWN_CALL_CHARS} that can be shown`
+      return { ok: false, reason: `${tool}: the call is too long to show safely (${detail}), so it was not run` }
+    }
+    return this.inTurn(() => this.askUser(ask, tool, shown, reason, state))
+  }
+
+  /** One dialog at a time: the user answers each call's question on its own. */
+  private inTurn<T>(work: () => Promise<T>): Promise<T> {
+    const turn = this.dialogs.then(work, work)
+    this.dialogs = turn.then(
+      () => undefined,
+      () => undefined,
+    )
+    return turn
+  }
+
+  private async askUser(
+    ask: NonNullable<BridgeHost['ask']>,
+    tool: string,
+    shown: string,
+    reason: string,
+    state: RunState,
+  ): Promise<Permit> {
+    const over = `${tool}: the script ended before the question was answered, so the call was not run`
+    if (runEnded(state)) return { ok: false, reason: over }
+    const question = `Codemode asks to run ${shown}. ${asciiOnly(cut(reason, SHOWN_REASON_CHARS, '...'))} Allow it?`
+    // The dialog cannot be closed from here: once the script has closed, the result waits for it only the grace.
+    const closedAndWaited = state.closed.then(() => this.host.sleep(CLOSING_GRACE_MS).catch(() => undefined)).then(() => undefined)
+    let label: string | undefined
+    try {
+      label = await Promise.race([ask(question, [APPROVE_LABEL, REFUSE_LABEL]), closedAndWaited])
+    } catch {
+      return { ok: false, reason: `${tool}: not approved, the question was dismissed or no one could be asked` }
+    }
+    if (label === undefined || runEnded(state)) return { ok: false, reason: over }
+    if (label !== APPROVE_LABEL) return { ok: false, reason: `${tool}: the user refused it` }
+    return { ok: true, consent: { consent: `The user pressed "${APPROVE_LABEL}" on the codemode question to run ${shown}` } }
+  }
+
+  private async execute(call: CallMessage, mcpNames: ReadonlySet<string>, state: RunState): Promise<Settled> {
     const refused = (reason: string): Settled => ({
       answer: { id: call.id, ok: false, error: reason },
       state: 'denied',
@@ -415,17 +546,11 @@ export class CodemodeBridge {
       Object.entries(call.input).filter(([key]) => !RESERVED_KEYS.includes(key)),
     )
     // The engine's own decision chain says whether the call may run; a plugin's call does not apply the session's rules itself.
-    try {
-      const verdict = await this.host.checkTool({ tool: call.tool, input })
-      if (verdict.decision !== 'allow') {
-        return refused(`${call.tool}: ${verdict.reason ?? `the session's permission rules answer ${verdict.decision}`}`)
-      }
-    } catch (error) {
-      return refused(`${call.tool}: the permission check failed: ${errorMessage(error)}`)
-    }
+    const permit = await this.permit(call.tool, input, state)
+    if (!permit.ok) return refused(permit.reason)
     try {
       // The tool's own schema validates the arguments; the script chose them.
-      const result = await this.host.callTool({ ...input, tool: call.tool } as ToolCallArgs)
+      const result = await this.host.callTool({ ...input, ...permit.consent, tool: call.tool } as ToolCallArgs)
       if (result.deny !== undefined) return refused(result.deny)
       if (result.isError === true) return failed(result.text ?? `${call.tool} failed`)
       const answer = { id: call.id, ok: true as const, text: result.text ?? '' }

@@ -10,7 +10,6 @@
 * [0016 — The codemode tool declares the four MCP tool hints once the mods API takes them, and a check tells the day it does](0016-the-codemode-tool-declares-the-four-mcp-tool-hints-once-the-mods-api-takes-them-and-a-check-tells-the-day-it-does.md) - open
 * [0024 — An ADR decides how codemode could poll MCP events, before any code, comparing a Bash poller with a mod-side client](0024-an-adr-decides-how-codemode-could-poll-mcp-events-before-any-code-comparing-a-bash-poller-with-a-mod-side-client.md) - open
 * [0025 — Research whether codemode scripts should also run Python, measured from the transcripts before any runtime](0025-research-whether-codemode-scripts-should-also-run-python-measured-from-the-transcripts-before-any-runtime.md) - open
-* [0027 — A check tells the day Claude Code declares the MCP tasks extension](0027-a-check-tells-the-day-claude-code-declares-the-mcp-tasks-extension.md) - open
 
 ## Closed
 
@@ -32,6 +31,7 @@
 * [0022 — Measure what a codemode script receives when an MCP tool answers with a task](0022-measure-what-a-codemode-script-receives-when-an-mcp-tool-answers-with-a-task.md) - closed
 * [0023 — pi-codemode moves from 1.1.0 to 1.7.0, whose runtime was rewritten, proved by a headless run and a timeout case](0023-pi-codemode-moves-from-1-1-0-to-1-7-0-whose-runtime-was-rewritten-proved-by-a-headless-run-and-a-timeout-case.md) - closed
 * [0026 — A nested call whose result arrives later is reported as deferred, not done](0026-a-nested-call-whose-result-arrives-later-is-reported-as-deferred-not-done.md) - closed
+* [0027 — A check tells the day Claude Code declares the MCP tasks extension](0027-a-check-tells-the-day-claude-code-declares-the-mcp-tasks-extension.md) - closed
 * [0028 — The headless check enforces its own deny rules whatever settings the invoking session carries](0028-the-headless-check-enforces-its-own-deny-rules-whatever-settings-the-invoking-session-carries.md) - closed
 * [0029 — The bridge refuses a nested call the session permission rules deny, because the engine stopped applying them](0029-the-bridge-refuses-a-nested-call-the-session-permission-rules-deny-because-the-engine-stopped-applying-them.md) - closed
 * [0030 — The headless MCP checks judge the mod, not the model choices, and pass twice in a row](0030-the-headless-mcp-checks-judge-the-mod-not-the-model-choices-and-pass-twice-in-a-row.md) - closed

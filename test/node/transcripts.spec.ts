@@ -102,6 +102,76 @@ describe('the transcript scan counts Bash, inline scripts and codemode per proje
   })
 })
 
+describe('the transcript scan counts the inline shell kinds', () => {
+  let scratch = ''
+  let root = ''
+
+  before(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'transcripts-shell-'))
+    root = join(scratch, 'projects')
+    write(join(root, 'eps', 's.jsonl'), [
+      entry(DAY, false, bash("bash -c 'SHELL_SECRET_1'"), bash('curl x | sh'), bash('ls')),
+      entry(DAY, false, bash('for f in a; do echo SHELL_SECRET_2; done'), bash('python3 -c x')),
+      entry(DAY, true, bash('zsh -lc x'), bash("bash <<'EOF'"), bash('while true; do :; done')),
+    ])
+  })
+
+  after(() => rmSync(scratch, { recursive: true, force: true }))
+
+  it('the main session line holds the three shell kinds beside the existing ones', () => {
+    const { stdout } = scan(root, '--since', '2026-05-01')
+    assert.equal(countOf(stdout, 'eps', 'main', 'bash'), 5)
+    assert.equal(countOf(stdout, 'eps', 'main', 'shell-c'), 1)
+    assert.equal(countOf(stdout, 'eps', 'main', 'shell-stdin'), 1)
+    assert.equal(countOf(stdout, 'eps', 'main', 'shell-loop'), 1)
+    assert.equal(countOf(stdout, 'eps', 'main', 'python-c'), 1)
+  })
+
+  it('the sidechain line holds the shell kinds apart', () => {
+    const { stdout } = scan(root, '--since', '2026-05-01')
+    assert.equal(countOf(stdout, 'eps', 'sidechain', 'shell-c'), 1)
+    assert.equal(countOf(stdout, 'eps', 'sidechain', 'shell-stdin'), 1)
+    assert.equal(countOf(stdout, 'eps', 'sidechain', 'shell-loop'), 1)
+    assert.equal(countOf(stdout, 'total', 'sidechain', 'shell-loop'), 1)
+  })
+
+  it('a shell command text never reaches stdout or stderr', () => {
+    const { stdout, stderr } = scan(root, '--since', '2026-05-01')
+    assert.doesNotMatch(stdout + stderr, /SHELL_SECRET/)
+  })
+})
+
+describe('the transcript scan counts a command too long to classify apart', () => {
+  let scratch = ''
+  let root = ''
+
+  before(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'transcripts-long-'))
+    root = join(scratch, 'projects')
+    write(join(root, 'zeta', 'l.jsonl'), [
+      entry(DAY, false, bash(`python3 -c LONG_SECRET ${'a'.repeat(250_000)}`), bash('ls')),
+      entry(DAY, true, bash(`bash -c LONG_SECRET ${'a'.repeat(250_000)}`)),
+    ])
+  })
+
+  after(() => rmSync(scratch, { recursive: true, force: true }))
+
+  it('the long command is counted as a Bash call and as too long, in no kind', () => {
+    const { stdout } = scan(root, '--since', '2026-05-01')
+    assert.equal(countOf(stdout, 'zeta', 'main', 'bash'), 2)
+    assert.equal(countOf(stdout, 'zeta', 'main', 'too long'), 1)
+    assert.equal(countOf(stdout, 'zeta', 'main', 'python-c'), 0)
+    assert.equal(countOf(stdout, 'zeta', 'sidechain', 'too long'), 1)
+    assert.equal(countOf(stdout, 'zeta', 'sidechain', 'shell-c'), 0)
+    assert.equal(countOf(stdout, 'total', 'main', 'too long'), 1)
+  })
+
+  it('the long command text never reaches stdout or stderr', () => {
+    const { stdout, stderr } = scan(root, '--since', '2026-05-01')
+    assert.doesNotMatch(stdout + stderr, /LONG_SECRET/)
+  })
+})
+
 describe('the transcript window and the root boundary', () => {
   let scratch = ''
   let root = ''

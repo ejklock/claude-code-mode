@@ -2,7 +2,7 @@
 type: Issue
 title: The installer offers allow rules for the tools codemode scripts call and merges them on an explicit yes
 description: install.sh shows a rule list and merges it into permissions.allow of the install scope settings, idempotent and backed up; the plugin never writes rules.
-status: open
+status: closed
 timestamp: 2026-11-27T21:10:19Z
 ---
 

@@ -215,6 +215,7 @@ claude plugin test .       # the mod's side, with a stand-in child
 npm test                   # the real child on a real socket, and invariants
 npm run typecheck
 node scripts/e2e.ts        # headless end to end with claude -p (spends model tokens)
+node scripts/tasks-check.ts # whether the session declares the MCP tasks extension; run after a Claude Code upgrade (spends model tokens)
 sh scripts/install-check.sh # runs install.sh for real into a throwaway config (slow)
 node scripts/partial.ts --runs 3  # duplicated writes after a failed script, headless (spends model tokens)
 ```

@@ -2,7 +2,7 @@
 type: Issue
 title: On an ask verdict the bridge can ask the user once per nested call in an interactive session
 description: An opt-in dialog through $.ui.ask and the consent key, so a nested call the engine would ask about can run after approval instead of being refused.
-status: open
+status: closed
 timestamp: 2026-11-27T21:10:19Z
 ---
 

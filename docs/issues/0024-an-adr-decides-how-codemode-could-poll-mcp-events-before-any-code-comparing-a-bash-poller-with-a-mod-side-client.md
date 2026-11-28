@@ -2,7 +2,7 @@
 type: Issue
 title: An ADR decides how codemode could poll MCP events, before any code, comparing a Bash poller with a mod-side client
 description: The mod opens its own MCP connection for the Events extension and exposes poll delivery as a registered tool that goes through the permission check.
-status: open
+status: closed
 timestamp: 2026-11-27T17:32:40Z
 ---
 
@@ -28,6 +28,7 @@ Delivery order of issues 0020 to 0026: 0020 first; the 0021 and 0022 measurement
 - **The mod's own MCP client** as the direction, over recording events as blocked until Claude Code ships a client (recommended at first, not taken).
 - **A registered poll-only tool**, over a background push subscriber that opens turns.
 - **Only the ADR now; code gated on a real server**, after the advisor review of 2026-11-27 found host, transport, config, auth and cursor storage undecided. Not taken: ADR and code proved on a fixture.
+- **A poller a codemode script runs through `tools.Bash`**, recorded in [ADR 0003](../adr/0003-codemode-polls-mcp-events-through-a-poller-a-script-runs-with-tools-bash-once-a-real-server-needs-it.md). Not taken: a client inside the mod behind a registered `McpEvents` tool; recording events as blocked.
 
 ### Risks
 
@@ -38,3 +39,7 @@ Delivery order of issues 0020 to 0026: 0020 first; the 0021 and 0022 measurement
 - C1: the ADR is written with each option's win, cost and the fact that would prove it wrong, and is Accepted by the owner.
 - C2: if the ADR needs it, the Constitution amendment is appended.
 - C3: `living-docs check docs` passes.
+
+### Outcome
+
+Decided on 2026-11-27 in [ADR 0003](../adr/0003-codemode-polls-mcp-events-through-a-poller-a-script-runs-with-tools-bash-once-a-real-server-needs-it.md), Accepted by the owner: no Constitution amendment is needed, since the poll goes through the session's `Bash` tool. The poller itself is a follow-up issue, opened when a server the owner uses publishes events.

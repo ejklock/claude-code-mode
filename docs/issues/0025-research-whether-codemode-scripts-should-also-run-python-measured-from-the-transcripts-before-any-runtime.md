@@ -2,7 +2,7 @@
 type: Issue
 title: Research whether codemode scripts should also run Python, measured from the transcripts before any runtime
 description: Measures how much inline shell and Python the model still writes, and compares WASM Python sandboxes, before any second language is decided.
-status: open
+status: closed
 timestamp: 2026-11-27T17:33:49Z
 ---
 
@@ -32,3 +32,9 @@ Out:
 - C2: each sandbox claim cites its source.
 - C3: the note states a go bar before measuring; issue 0013 used 1% of `Bash` calls.
 - C4: `living-docs check docs` passes.
+
+### Outcome
+
+Measured on 2026-11-27; the counts, the method and the sandbox comparison are in [research 0004](../research/0004-how-much-inline-python-the-model-still-writes-and-which-sandbox-could-run-python-scripts-for-codemode.md). Inline Python is 2.72% of the main session's `Bash` calls over 30 days (638 of 23,432; 2.67% since 2026-10-09), above the 1% go bar, so the decision opens an ADR on a Python runtime, to be weighed with the owner. Inline shell loops (6.35%) are the largest kind and already fit codemode through `tools.Bash`.
+
+Accepted open items of the classifier, from review: a long run of blank lines can still take tens of seconds per command (none in these transcripts); an arithmetic shift `$((1<<2))` is read as a heredoc and hides later shell lines (undercounts shell, never Python); the 200 KB and 220 KB time tests sit above the cap and cannot fail.

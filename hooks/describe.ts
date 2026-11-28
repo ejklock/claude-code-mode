@@ -1,4 +1,4 @@
-import { EXPOSED_TOOLS, TOOL_SPECS } from '../shared/protocol.ts'
+import { EXPOSED_TOOLS, TOOL_SPECS, inert } from '../shared/protocol.ts'
 import type { McpTool, ToolArg, ToolSpec } from '../shared/protocol.ts'
 
 /** The line the system prompt carries so the model reaches for codemode unprompted. */
@@ -115,12 +115,6 @@ function serverOf(name: string): string {
 
 export function builtinSection(doc: ToolDoc): Section {
   return { name: doc.name, server: undefined, text: toolSection(doc) }
-}
-
-// A description is data, not markup: one line with no fence and no leading `#`
-// cannot end its section or open another.
-function inert(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().replace(/`{3,}/g, "'''").replace(/^#/, '\\#')
 }
 
 /** An MCP tool's section: its heading, its own description, and how a script calls it. */

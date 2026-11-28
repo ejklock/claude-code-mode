@@ -40,6 +40,7 @@ async function readCodeText(list: ListTools): Promise<string | undefined> {
 export const register: Register = (on, options) => {
   // Read first so a bad setting fails the load.
   const exposure = readExposure(options)
+  const askDialog = options.askDialog === true
   registerRender(on, options)
   registerExposure(on, exposure)
   const syncExposure = exposureSync(exposure)
@@ -90,6 +91,7 @@ export const register: Register = (on, options) => {
         pluginRoot: $.plugin.root,
         spawn: request => $.process.spawn(request),
         checkTool: input => $.tool.check(input),
+        ...(askDialog ? { ask: (question: string, choices: readonly string[]) => $.ui.ask(question, choices) } : {}),
         callTool: input => $.tool.call(input),
         listTools: () => visibleTools(() => $.tool.list()),
         post: (url, init) => $.http.fetch(url, init),

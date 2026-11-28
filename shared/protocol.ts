@@ -167,13 +167,30 @@ export type McpTool = {
   description: string
 }
 
-/** What the child declares for an MCP tool: no input schema is known at run time, so it is open. */
+/**
+ * Server-supplied text as data, not markup: one line with no fence and no
+ * leading `#` cannot end the section it sits in or open another.
+ */
+export function inert(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().replace(/`{3,}/g, "'''").replace(/^#/, '\\#')
+}
+
+/**
+ * What the child declares for an MCP tool: no input schema is known at run time, so it is open.
+ * The description ends with the original name, which ToolSearch needs and the script identifier hides.
+ */
 export function mcpDeclarationOf(tool: McpTool): {
   description: string
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
 } {
-  return { description: tool.description, inputSchema: { type: 'object' }, outputSchema: { type: 'string' } }
+  const description = inert(tool.description)
+  const lookup = `Load its parameters with ToolSearch \`select:${inert(tool.name)}\`.`
+  return {
+    description: description === '' ? lookup : `${description}\n${lookup}`,
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'string' },
+  }
 }
 
 /** What the mod writes to the child's standard input. */

@@ -2,7 +2,7 @@
 type: Issue
 title: A codemode script calls WebFetch and WebSearch through the bridge
 description: WebFetch and WebSearch join the exposed tools, so a script reads and searches the web through the session tools and returns only what it prints.
-status: open
+status: closed
 timestamp: 2026-11-27T17:32:35Z
 ---
 
@@ -33,3 +33,12 @@ Out:
 - C3: a script whose web call outlives the 120 s script deadline (`hooks/register.ts`) fails with a ledger that marks the call `unknown`, proved by a test.
 - C4: a script calls `tools.WebFetch` in a session where the tool is absent or deferred, and the error names the cause; proved by a test.
 - C5: `se-gates check` passes.
+
+### Outcome
+
+
+(Bash completed with no output)
+
+Shipped in v0.8.0 (pull request #18, merge commit 1fd42d8). C1, C3, C4 and C5 are proved by `claude plugin test .` (234 pass on 2.1.291 and 2.1.332), `npm test` and the quality gate.
+
+C2, verified on 2026-11-27 in a live interactive session with v0.8.0 installed: `ALL_TOOLS` lists WebFetch and WebSearch, and a script's `tools.WebFetch` on an MCP documentation page returned its text. In the same session the permission barrier refused a script's `tools.Write` to `/etc` with the engine's ask reason, and the file was not written; it also refused a nested `Bash` that the auto mode's classifier would have settled, since the verdict was `ask`.

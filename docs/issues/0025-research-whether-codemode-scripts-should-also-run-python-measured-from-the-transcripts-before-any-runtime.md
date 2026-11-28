@@ -25,6 +25,7 @@ Out:
 - **Shell kinds counted**: `shell-c` (`bash`, `sh` or `zsh` with `-c`), `shell-stdin` (a heredoc or a pipe into a shell) and `shell-loop` (a command holding a `for` or `while` loop): the forms in which the model writes a shell script rather than one command.
 - **Go bar, set before measuring**: an ADR for a Python runtime is opened only if inline Python (`python-c` plus `python-stdin`) is at least 1% of the main session's `Bash` calls over the 30-day window, the bar of issue 0013; below it, the issue closes on the note.
 - **A review round before measuring**: `scripts/adoption.ts` keeps counting only Python and Node inline scripts so its numbers stay comparable with issue 0013; heredoc bodies are not scanned as commands; a size cap keeps the classifier from taking minutes on a large command; the header and a precedence test are corrected. Not taken: committing and measuring with these open.
+- **No Python runtime; steer Python-shaped work into JavaScript codemode**, recorded in [ADR 0002](../adr/0002-codemode-adds-no-python-runtime-and-steers-python-shaped-work-into-javascript-scripts.md), after the go bar was met. Not taken: Monty behind the bridge; Pyodide with its `js` bridge removed.
 
 ### Acceptance
 

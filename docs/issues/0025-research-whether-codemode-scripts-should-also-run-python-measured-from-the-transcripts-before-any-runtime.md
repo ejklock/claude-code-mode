@@ -22,6 +22,9 @@ Out:
 ### Decision
 
 - **Research first**, over Python as a second codemode language now (a second runtime, an ADR and an amendment on an unmeasured gain), over a shell mode (a real shell reaches the disk directly, against the Non-negotiables) and over keeping JavaScript only with no measurement.
+- **Shell kinds counted**: `shell-c` (`bash`, `sh` or `zsh` with `-c`), `shell-stdin` (a heredoc or a pipe into a shell) and `shell-loop` (a command holding a `for` or `while` loop): the forms in which the model writes a shell script rather than one command.
+- **Go bar, set before measuring**: an ADR for a Python runtime is opened only if inline Python (`python-c` plus `python-stdin`) is at least 1% of the main session's `Bash` calls over the 30-day window, the bar of issue 0013; below it, the issue closes on the note.
+- **A review round before measuring**: `scripts/adoption.ts` keeps counting only Python and Node inline scripts so its numbers stay comparable with issue 0013; heredoc bodies are not scanned as commands; a size cap keeps the classifier from taking minutes on a large command; the header and a precedence test are corrected. Not taken: committing and measuring with these open.
 
 ### Acceptance
 

@@ -747,6 +747,20 @@ describe('a data adoption run reports how the model processed the files', () => 
     assert.deepEqual([outcome.inlineKinds, outcome.bashCalls], [[], 1])
   })
 
+  it('a shell loop or a shell -c is not an inline script for adoption', () => {
+    const loop = classify(bash('for f in a; do cat $f; done') + answer(GOOD)) as { inlineKinds: string[]; bashCalls: number }
+    assert.deepEqual([loop.inlineKinds, loop.bashCalls], [[], 1])
+    const shell = classify(bash('bash -c x') + bash('curl x | sh') + answer(GOOD)) as { inlineKinds: string[] }
+    assert.deepEqual(shell.inlineKinds, [])
+  })
+
+  it('a python -c next to a shell loop reports only the python kind', () => {
+    const outcome = classify(bash('for f in a; do :; done') + bash('python3 -c x') + answer(GOOD)) as {
+      inlineKinds: string[]
+    }
+    assert.deepEqual(outcome.inlineKinds, ['python-c'])
+  })
+
   it('Proves C2: no tool call reports nothing used', () => {
     assert.deepEqual(classify(answer(GOOD)), {
       ok: true,

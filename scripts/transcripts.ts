@@ -1,6 +1,7 @@
 /**
  * Counts, in Claude Code transcripts, how often the model ran Bash, an inline
- * Python or Node script through Bash, and the codemode tool. It prints counts
+ * Python, Node or shell script through Bash, and the codemode tool; a command too
+ * long to classify is counted apart as "too long". It prints counts
  * only, never a command's text, and reads the transcripts read-only.
  *
  *   node scripts/transcripts.ts                       (~/.claude/projects, the last 30 days)
@@ -13,15 +14,23 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { inlineScriptKind } from './inline-script.ts'
+import { MAX_CLASSIFIED_LENGTH, inlineScriptKind } from './inline-script.ts'
 import type { InlineKind } from './inline-script.ts'
 
 const TOOL = 'mcp__codemode__codemode'
 const DAY_MS = 86_400_000
 const DEFAULT_WINDOW_DAYS = 30
-const KINDS: InlineKind[] = ['python-c', 'python-stdin', 'node-e', 'node-stdin']
+const KINDS: InlineKind[] = [
+  'python-c',
+  'python-stdin',
+  'node-e',
+  'node-stdin',
+  'shell-c',
+  'shell-stdin',
+  'shell-loop',
+]
 
-type Bucket = { bash: number; codemode: number; kinds: Record<InlineKind, number> }
+type Bucket = { bash: number; codemode: number; tooLong: number; kinds: Record<InlineKind, number> }
 type Counts = { main: Bucket; sidechain: Bucket; skipped: number }
 
 type Block = { type?: string; name?: string; input?: { command?: unknown } }
@@ -30,13 +39,23 @@ type Line = { isSidechain?: unknown; timestamp?: unknown; message?: { content?: 
 const emptyBucket = (): Bucket => ({
   bash: 0,
   codemode: 0,
-  kinds: { 'python-c': 0, 'python-stdin': 0, 'node-e': 0, 'node-stdin': 0 },
+  tooLong: 0,
+  kinds: {
+    'python-c': 0,
+    'python-stdin': 0,
+    'node-e': 0,
+    'node-stdin': 0,
+    'shell-c': 0,
+    'shell-stdin': 0,
+    'shell-loop': 0,
+  },
 })
 const emptyCounts = (): Counts => ({ main: emptyBucket(), sidechain: emptyBucket(), skipped: 0 })
 
 function add(target: Bucket, source: Bucket): void {
   target.bash += source.bash
   target.codemode += source.codemode
+  target.tooLong += source.tooLong
   for (const kind of KINDS) target.kinds[kind] += source.kinds[kind]
 }
 
@@ -52,7 +71,12 @@ function countBlock(bucket: Bucket, block: Block): void {
   if (block.name !== 'Bash') return
   bucket.bash++
   const command = block.input?.command
-  const kind = typeof command === 'string' ? inlineScriptKind(command) : undefined
+  if (typeof command !== 'string') return
+  if (command.length > MAX_CLASSIFIED_LENGTH) {
+    bucket.tooLong++
+    return
+  }
+  const kind = inlineScriptKind(command)
   if (kind !== undefined) bucket.kinds[kind]++
 }
 
@@ -88,7 +112,7 @@ function transcriptFiles(directory: string): string[] {
 
 function bucketText(bucket: Bucket): string {
   const kinds = KINDS.map(kind => `${kind} ${bucket.kinds[kind]}`).join(', ')
-  return `bash ${bucket.bash}, ${kinds}, codemode ${bucket.codemode}`
+  return `bash ${bucket.bash}, ${kinds}, too long ${bucket.tooLong}, codemode ${bucket.codemode}`
 }
 
 function lineText(name: string, counts: Counts): string {

@@ -138,6 +138,9 @@ export type DataOutcome =
     }
   | { ok: false; reason: string }
 
+/** Adoption counts a Python or Node script only, so its numbers stay comparable with earlier runs; a shell kind is not one. */
+const isPythonOrNode = (kind: InlineKind): boolean => !kind.startsWith('shell-')
+
 function bashCommands(events: Event[]): string[] {
   return events
     .flatMap(contentBlocks)
@@ -160,7 +163,7 @@ export function classifyDataRun(run: SpawnOutcome): DataOutcome {
     ok: true,
     tools: base.tools,
     usedCodemode: base.usedCodemode,
-    inlineKinds: commands.flatMap(command => inlineScriptKind(command) ?? []),
+    inlineKinds: commands.flatMap(command => inlineScriptKind(command) ?? []).filter(isPythonOrNode),
     bashCalls: commands.length,
     namesTopThree: DATA_TOP_THREE.every(customer => answer.includes(customer.toLowerCase())),
   }
